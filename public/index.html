@@ -7,6 +7,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F7F5;color:#18181B;-webkit-font-smoothing:antialiased}
@@ -58,6 +59,74 @@ const Btn = ({children,variant="primary",small,...props}) => { const s={primary:
 const Card = ({title,action,children}) => <div style={{background:"white",border:"1px solid #E5E7EB",borderRadius:12,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",overflow:"hidden",marginBottom:16}}>{title && <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 18px",borderBottom:"1px solid #E5E7EB"}}><div style={{fontSize:13,fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",color:"#475569"}}>{title}</div>{action}</div>}<div>{children}</div></div>;
 const Empty = ({msg}) => <div style={{textAlign:"center",padding:40,color:"#94A3B8",fontSize:14}}>{msg}</div>;
 const Badge = ({color,children}) => <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:6,fontSize:10,fontWeight:700,background:color+"20",color}}>{children}</span>;
+
+/* ═══ PDF RECEIPT GENERATOR ═══ */
+async function generateReceiptPDF({receiptNumber,tenantName,unit,propertyAddress,propertyName,amount,paymentMethod,rentalPeriod,dateVerified,businessName,landlordName}) {
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF({unit:"mm",format:"a4"});
+  const G=[5,150,105],D=[24,24,27],GR=[100,116,139],LG=[236,253,245],W=[255,255,255];
+  const fmtDate = (s) => new Date(s).toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+  const capFirst = (s) => s ? s.charAt(0).toUpperCase()+s.slice(1) : "—";
+
+  // Header bar
+  doc.setFillColor(...G); doc.rect(0,0,210,30,"F");
+  doc.setTextColor(...W); doc.setFont("helvetica","bold"); doc.setFontSize(18);
+  doc.text(businessName||"RentProof",14,13);
+  doc.setFontSize(9); doc.setFont("helvetica","normal");
+  doc.text("RENT PAYMENT RECEIPT",14,21);
+  doc.text(`Receipt #${receiptNumber}`,196,13,{align:"right"});
+  doc.text(fmtDate(dateVerified),196,21,{align:"right"});
+
+  // Tenant info box
+  doc.setFillColor(...LG); doc.roundedRect(14,36,182,38,3,3,"F");
+  doc.setTextColor(...GR); doc.setFontSize(7.5); doc.setFont("helvetica","bold");
+  doc.text("TENANT",20,44); doc.text("UNIT",90,44); doc.text("PROPERTY / ADDRESS",130,44);
+  doc.setTextColor(...D); doc.setFontSize(12); doc.setFont("helvetica","bold");
+  doc.text(tenantName||"—",20,53);
+  doc.setFontSize(11); doc.text(unit||"—",90,53);
+  doc.setFontSize(9); doc.setFont("helvetica","normal");
+  const addrText = propertyAddress ? `${propertyName||""}\n${propertyAddress}` : propertyName||"—";
+  doc.text(doc.splitTextToSize(addrText,66),130,53);
+
+  // Details section header
+  doc.setTextColor(...D); doc.setFontSize(10); doc.setFont("helvetica","bold");
+  doc.text("PAYMENT DETAILS",14,86);
+  doc.setDrawColor(229,231,235); doc.setLineWidth(0.3); doc.line(14,89,196,89);
+
+  // Detail rows
+  const rows=[
+    ["Rental Period",monthLabel(rentalPeriod)],
+    ["Amount Paid",fmtMoney(amount)],
+    ["Payment Method",capFirst(paymentMethod)],
+    ["Date Verified",fmtDate(dateVerified)],
+    ["Verification Status","VERIFIED"],
+  ];
+  let y=97;
+  rows.forEach(([label,value],i)=>{
+    if(i%2===0){doc.setFillColor(248,250,252);doc.rect(14,y-4.5,182,9,"F");}
+    doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(...GR);
+    doc.text(label,20,y);
+    doc.setFont("helvetica","bold"); doc.setFontSize(9);
+    doc.setTextColor(i===4?G[0]:D[0],i===4?G[1]:D[1],i===4?G[2]:D[2]);
+    doc.text(value,190,y,{align:"right"});
+    y+=10;
+  });
+
+  // Total amount box
+  doc.setFillColor(...G); doc.roundedRect(14,y+6,182,26,3,3,"F");
+  doc.setTextColor(...W); doc.setFontSize(8); doc.setFont("helvetica","normal");
+  doc.text("TOTAL AMOUNT VERIFIED",105,y+14,{align:"center"});
+  doc.setFontSize(22); doc.setFont("helvetica","bold");
+  doc.text(fmtMoney(amount),105,y+25,{align:"center"});
+
+  // Footer
+  doc.setDrawColor(...G); doc.setLineWidth(0.5); doc.line(14,268,196,268);
+  doc.setTextColor(...GR); doc.setFontSize(8); doc.setFont("helvetica","normal");
+  doc.text(`Verified by ${landlordName||"Landlord"} · Powered by RentProof`,105,274,{align:"center"});
+  doc.text("This receipt confirms that rent payment proof was submitted and verified by the landlord.",105,280,{align:"center"});
+
+  return doc.output("blob");
+}
 
 function App() {
   const [tab, setTab] = useState("dash");
@@ -172,14 +241,30 @@ function TenantsTab({data,refresh,showToast,setModal}) {
 
 /* ═══ PAYMENTS (with late fee auto-calc) ═══ */
 function PaymentsTab({data,refresh,showToast,setModal}) {
-  const {payments}=data;const [filter,setFilter]=useState("all");
+  const {payments,settings}=data;const [filter,setFilter]=useState("all");const [approving,setApproving]=useState(null);
   const filtered=payments.filter(p=>{if(filter==="review")return p.status==="proof_uploaded";if(filter==="verified")return p.status==="verified";if(filter==="overdue")return p.status==="pending"||p.status==="overdue";return true;});
-  const approve=async(p)=>{await sb(`payments?id=eq.${p.id}`,{method:"PATCH",body:JSON.stringify({status:"verified",approved_at:new Date().toISOString(),receipt_sent:true})});const rn=`RP-${Date.now().toString(36).toUpperCase()}`;await sb("receipts",{method:"POST",body:JSON.stringify({payment_id:p.id,tenant_id:p.tenant_id,receipt_number:rn,tenant_name:p.tenants?.name||"Tenant",unit:p.tenants?.unit,property_address:p.tenants?.properties?.address,amount:p.amount,rental_period:p.month,payment_method:p.tenants?.payment_method,date_received:new Date().toISOString().split("T")[0],date_verified:new Date().toISOString(),proof_reference:p.proof_url})});try{await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:p.tenants?.phone,message:`✅ RentProof Receipt: Your ${p.month} rent of ${fmtMoney(p.amount)} verified. Receipt #${rn}. Thank you!`})});}catch(e){}refresh();showToast(`Approved! Receipt sent to ${p.tenants?.name}`);};
-  const viewProof=(p)=>setModal(<div><h2 style={{fontSize:18,fontWeight:800,marginBottom:4}}>Proof of Payment</h2><p style={{fontSize:13,color:"#64748B",marginBottom:12}}>{p.tenants?.name} · Unit {p.tenants?.unit} · {p.tenants?.properties?.name} · {monthLabel(p.month)} · {fmtMoney(p.amount)}</p>{p.proof_url?<img src={p.proof_url} alt="Proof" style={{maxWidth:"100%",borderRadius:8,marginBottom:16}}/>:<p style={{color:"#DC2626",padding:20}}>No proof uploaded yet.</p>}{p.proof_uploaded_at&&<p style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>Uploaded: {new Date(p.proof_uploaded_at).toLocaleString()}</p>}{p.status==="proof_uploaded"&&<Btn onClick={()=>{approve(p);setModal(null);}}>✅ Approve & Send Receipt</Btn>}</div>);
+  const approve=async(p)=>{
+    setApproving(p.id);
+    const now=new Date().toISOString();
+    const rn=`RP-${Date.now().toString(36).toUpperCase()}`;
+    // Generate PDF receipt
+    let pdfUrl=null;
+    try {
+      const blob=await generateReceiptPDF({receiptNumber:rn,tenantName:p.tenants?.name,unit:p.tenants?.unit,propertyAddress:p.tenants?.properties?.address,propertyName:p.tenants?.properties?.name,amount:p.amount,paymentMethod:p.tenants?.payment_method,rentalPeriod:p.month,dateVerified:now,businessName:settings.business_name,landlordName:settings.landlord_name});
+      const pdfPath=`receipts/${p.id}_${rn}.pdf`;
+      const up=await fetch(`${SB_URL}/storage/v1/object/rentproof-files/${pdfPath}`,{method:"POST",headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,"Content-Type":"application/pdf"},body:blob});
+      if(up.ok) pdfUrl=`${SB_URL}/storage/v1/object/public/rentproof-files/${pdfPath}`;
+    } catch(e){console.error("PDF failed:",e);}
+    await sb(`payments?id=eq.${p.id}`,{method:"PATCH",body:JSON.stringify({status:"verified",approved_at:now,receipt_sent:true})});
+    await sb("receipts",{method:"POST",body:JSON.stringify({payment_id:p.id,tenant_id:p.tenant_id,receipt_number:rn,tenant_name:p.tenants?.name||"Tenant",unit:p.tenants?.unit,property_address:p.tenants?.properties?.address,amount:p.amount,rental_period:p.month,payment_method:p.tenants?.payment_method,date_received:now.split("T")[0],date_verified:now,proof_reference:p.proof_url,pdf_url:pdfUrl})});
+    try{const sms=pdfUrl?`✅ Receipt #${rn}: Your ${monthLabel(p.month)} rent of ${fmtMoney(p.amount)} has been verified. Download your receipt: ${pdfUrl}`:`✅ RentProof Receipt: Your ${p.month} rent of ${fmtMoney(p.amount)} verified. Receipt #${rn}. Thank you!`;await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:p.tenants?.phone,message:sms})});}catch(e){}
+    setApproving(null);refresh();showToast(`Approved! PDF receipt sent to ${p.tenants?.name}`);
+  };
+  const viewProof=(p)=>setModal(<div><h2 style={{fontSize:18,fontWeight:800,marginBottom:4}}>Proof of Payment</h2><p style={{fontSize:13,color:"#64748B",marginBottom:12}}>{p.tenants?.name} · Unit {p.tenants?.unit} · {p.tenants?.properties?.name} · {monthLabel(p.month)} · {fmtMoney(p.amount)}</p>{p.proof_url?<img src={p.proof_url} alt="Proof" style={{maxWidth:"100%",borderRadius:8,marginBottom:16}}/>:<p style={{color:"#DC2626",padding:20}}>No proof uploaded yet.</p>}{p.proof_uploaded_at&&<p style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>Uploaded: {new Date(p.proof_uploaded_at).toLocaleString()}</p>}{p.status==="proof_uploaded"&&<Btn onClick={()=>{approve(p);setModal(null);}} disabled={approving===p.id}>{approving===p.id?"Generating PDF...":"✅ Approve & Send Receipt PDF"}</Btn>}</div>);
   const rows=filtered.map(p=>{if(p.status==="verified")return p;const dl=calcDaysLate(p.due_date);return{...p,_daysLate:dl,_lateFee:calcLateFee(dl,p.tenants?.grace_days,p.tenants?.late_fee)};});
   return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Payments</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{payments.length} records</p>
     <div className="no-print" style={{display:"flex",gap:6,marginBottom:16}}>{[["all","All"],["review",`Review (${payments.filter(p=>p.status==="proof_uploaded").length})`],["verified","Verified"],["overdue","Overdue"]].map(([f,l])=><button key={f} onClick={()=>setFilter(f)} style={{background:filter===f?"#059669":"#F1F5F9",color:filter===f?"white":"#64748B",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{l}</button>)}</div>
-    {rows.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"white",padding:"12px 16px",borderRadius:10,marginBottom:6,border:"1px solid #E5E7EB",borderLeft:`4px solid ${STATUS_COLORS[p.status]||"#94A3B8"}`}}><div><div style={{fontWeight:700,fontSize:14}}>{p.tenants?.name||"Tenant"}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {p.tenants?.unit||"—"} · {p.tenants?.properties?.name||""} · {monthLabel(p.month)}{p._daysLate>0&&<span style={{color:"#DC2626",fontWeight:700}}> · {p._daysLate}d late</span>}{p._lateFee>0&&<span style={{color:"#DC2626",fontWeight:700}}> · +{fmtMoney(p._lateFee)} fee</span>}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15}}>{fmtMoney(p.amount)}</div><Badge color={STATUS_COLORS[p.status]}>{STATUS_LABELS[p.status]}</Badge>{p.proof_url&&<Btn variant="outline" small onClick={()=>viewProof(p)}>View Proof</Btn>}{p.status==="proof_uploaded"&&<Btn small onClick={()=>approve(p)}>Approve</Btn>}</div></div>)}
+    {rows.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"white",padding:"12px 16px",borderRadius:10,marginBottom:6,border:"1px solid #E5E7EB",borderLeft:`4px solid ${STATUS_COLORS[p.status]||"#94A3B8"}`}}><div><div style={{fontWeight:700,fontSize:14}}>{p.tenants?.name||"Tenant"}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {p.tenants?.unit||"—"} · {p.tenants?.properties?.name||""} · {monthLabel(p.month)}{p._daysLate>0&&<span style={{color:"#DC2626",fontWeight:700}}> · {p._daysLate}d late</span>}{p._lateFee>0&&<span style={{color:"#DC2626",fontWeight:700}}> · +{fmtMoney(p._lateFee)} fee</span>}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15}}>{fmtMoney(p.amount)}</div><Badge color={STATUS_COLORS[p.status]}>{STATUS_LABELS[p.status]}</Badge>{p.proof_url&&<Btn variant="outline" small onClick={()=>viewProof(p)}>View Proof</Btn>}{p.status==="proof_uploaded"&&<Btn small onClick={()=>approve(p)} disabled={approving===p.id}>{approving===p.id?"Generating...":"Approve"}</Btn>}</div></div>)}
     {rows.length===0&&<Empty msg="No payments match this filter."/>}
   </div>;
 }
