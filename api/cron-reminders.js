@@ -14,6 +14,35 @@ export default async function handler(req, res) {
     const tenants = await tenantsRes.json();
     let sent = 0;
     let errors = 0;
+    let lateUpdated = 0;
+
+    // ── Apply late fees & overdue status to all non-verified payments ──
+    const pendingRes = await fetch(
+      `${SB_URL}/rest/v1/payments?status=not.eq.verified&select=id,status,due_date,is_late,days_late,late_fee_applied,tenant_id,tenants(grace_days,late_fee)`,
+      { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` } }
+    );
+    const pendingPayments = await pendingRes.json();
+    if (Array.isArray(pendingPayments)) {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      for (const p of pendingPayments) {
+        if (!p.due_date) continue;
+        const due = new Date(p.due_date + "T00:00:00");
+        const daysLate = Math.max(0, Math.floor((today - due) / 86400000));
+        const grace = p.tenants?.grace_days ?? 5;
+        const fee = p.tenants?.late_fee ?? 0;
+        if (daysLate > grace) {
+          const newStatus = p.status === "pending" ? "overdue" : p.status;
+          if (!p.is_late || p.days_late !== daysLate || p.late_fee_applied !== fee || p.status !== newStatus) {
+            await fetch(`${SB_URL}/rest/v1/payments?id=eq.${p.id}`, {
+              method: "PATCH",
+              headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ is_late: true, days_late: daysLate, late_fee_applied: fee, status: newStatus }),
+            });
+            lateUpdated++;
+          }
+        }
+      }
+    }
 
     for (const tenant of tenants) {
       const existingRes = await fetch(`${SB_URL}/rest/v1/payments?tenant_id=eq.${tenant.id}&month=eq.${month}`, {
@@ -61,7 +90,7 @@ export default async function handler(req, res) {
       } catch (e) { errors++; }
     }
 
-    return res.status(200).json({ success: true, month, tenants: tenants.length, sent, errors });
+    return res.status(200).json({ success: true, month, tenants: tenants.length, sent, errors, lateUpdated });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
