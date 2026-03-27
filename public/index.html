@@ -244,6 +244,27 @@ async function generateDemandLetterPDF({landlordName,landlordPhone,landlordEmail
   return doc.output("blob");
 }
 
+/* ═══ ENSURE MONTHLY PAYMENTS ═══ */
+async function ensureMonthlyPayments(tenants, payments) {
+  const month = monthNow();
+  const existingIds = new Set(payments.filter(p => p.month === month).map(p => p.tenant_id));
+  const missing = tenants.filter(t => !existingIds.has(t.id));
+  if (!missing.length) return 0;
+  await Promise.all(missing.map(t =>
+    sb("payments", {
+      method: "POST",
+      body: JSON.stringify({
+        tenant_id: t.id,
+        month,
+        amount: t.rent_amount,
+        status: "pending",
+        due_date: `${month}-${String(t.due_day || 1).padStart(2, "0")}`,
+      }),
+    }).catch(() => {})
+  ));
+  return missing.length;
+}
+
 /* ═══ SHARED SMS HELPER ═══ */
 async function sendReminderSMS(tenant, showToast, refresh) {
   const month=monthNow();
@@ -275,8 +296,10 @@ function App() {
         sb("documents?order=created_at.desc&limit=200&select=*,properties(name),tenants(name)"),
         sb("settings?limit=1"),
       ]);
-      const lateUpdated = await applyLateFees(tenants||[], payments||[]);
-      const finalPayments = lateUpdated > 0 ? await sb("payments?order=created_at.desc&limit=500&select=*,tenants(id,name,unit,phone,email,payment_method,property_id,rent_amount,due_day,grace_days,late_fee,properties(name,address))") : payments;
+      const created = await ensureMonthlyPayments(tenants||[], payments||[]);
+      const basePayments = created > 0 ? await sb("payments?order=created_at.desc&limit=500&select=*,tenants(id,name,unit,phone,email,payment_method,property_id,rent_amount,due_day,grace_days,late_fee,properties(name,address))") : payments;
+      const lateUpdated = await applyLateFees(tenants||[], basePayments||[]);
+      const finalPayments = lateUpdated > 0 ? await sb("payments?order=created_at.desc&limit=500&select=*,tenants(id,name,unit,phone,email,payment_method,property_id,rent_amount,due_day,grace_days,late_fee,properties(name,address))") : basePayments;
       setData({properties:properties||[],tenants:tenants||[],payments:finalPayments||[],documents:documents||[],settings:settingsArr?.[0]||{}});
     } catch(e){console.error(e);}
     setLoading(false);

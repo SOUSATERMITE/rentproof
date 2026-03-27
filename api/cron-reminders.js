@@ -15,6 +15,28 @@ export default async function handler(req, res) {
     let sent = 0;
     let errors = 0;
     let lateUpdated = 0;
+    let recordsCreated = 0;
+
+    // ── Ensure every active tenant has a payment record for this month ──
+    const existingRes = await fetch(`${SB_URL}/rest/v1/payments?month=eq.${month}&select=tenant_id`, {
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    });
+    const existing = await existingRes.json();
+    const existingIds = new Set(Array.isArray(existing) ? existing.map(p => p.tenant_id) : []);
+    const missingTenants = Array.isArray(tenants) ? tenants.filter(t => !existingIds.has(t.id)) : [];
+    await Promise.all(missingTenants.map(async t => {
+      try {
+        await fetch(`${SB_URL}/rest/v1/payments`, {
+          method: "POST",
+          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenant_id: t.id, month, amount: t.rent_amount, status: "pending",
+            due_date: `${month}-${String(t.due_day || 1).padStart(2, "0")}`,
+          }),
+        });
+        recordsCreated++;
+      } catch(e) {}
+    }));
 
     // ── Apply late fees & overdue status to all non-verified payments ──
     const pendingRes = await fetch(
@@ -45,27 +67,13 @@ export default async function handler(req, res) {
     }
 
     for (const tenant of tenants) {
-      const existingRes = await fetch(`${SB_URL}/rest/v1/payments?tenant_id=eq.${tenant.id}&month=eq.${month}`, {
+      const tenantPayRes = await fetch(`${SB_URL}/rest/v1/payments?tenant_id=eq.${tenant.id}&month=eq.${month}`, {
         headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
       });
-      const existing = await existingRes.json();
-
-      let paymentId;
-      if (!existing || existing.length === 0) {
-        const createRes = await fetch(`${SB_URL}/rest/v1/payments`, {
-          method: "POST",
-          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
-          body: JSON.stringify({
-            tenant_id: tenant.id, month, amount: tenant.rent_amount, status: "pending",
-            due_date: `${month}-${String(tenant.due_day || 1).padStart(2, "0")}`,
-          }),
-        });
-        const created = await createRes.json();
-        paymentId = created[0]?.id;
-      } else {
-        if (existing[0].status === "verified") continue;
-        paymentId = existing[0].id;
-      }
+      const tenantPay = await tenantPayRes.json();
+      if (!tenantPay || !tenantPay.length) continue;
+      if (tenantPay[0].status === "verified") continue;
+      const paymentId = tenantPay[0].id;
 
       const baseUrl = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
       const link = `${baseUrl}/pay.html?id=${paymentId}`;
@@ -90,7 +98,7 @@ export default async function handler(req, res) {
       } catch (e) { errors++; }
     }
 
-    return res.status(200).json({ success: true, month, tenants: tenants.length, sent, errors, lateUpdated });
+    return res.status(200).json({ success: true, month, tenants: tenants.length, recordsCreated, sent, errors, lateUpdated });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
