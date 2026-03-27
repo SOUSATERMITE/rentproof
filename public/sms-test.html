@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><title>SMS Test</title></head>
+<body style="font-family:sans-serif;max-width:500px;margin:40px auto;padding:20px">
+  <h2>RentProof SMS Test</h2>
+  <p>Enter your phone number and hit send. This will show the exact response from Twilio.</p>
+  <input id="phone" placeholder="Your phone (e.g. +19085551234)" style="width:100%;padding:10px;font-size:16px;margin:10px 0;border:1px solid #ccc;border-radius:6px">
+  <button onclick="test()" style="width:100%;padding:12px;background:#059669;color:white;border:none;border-radius:6px;font-size:16px;cursor:pointer">Send Test SMS</button>
+  <pre id="result" style="margin-top:20px;background:#f4f4f4;padding:16px;border-radius:8px;white-space:pre-wrap;font-size:13px"></pre>
+  <script>
+    async function test() {
+      const phone = document.getElementById('phone').value;
+      const result = document.getElementById('result');
+      result.textContent = 'Sending...';
+      try {
+        const res = await fetch('/api/send-sms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: phone, message: 'RentProof test message - if you see this, SMS is working!' })
+        });
+        const data = await res.json();
+        result.textContent = JSON.stringify(data, null, 2);
+      } catch(e) {
+        result.textContent = 'Error: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

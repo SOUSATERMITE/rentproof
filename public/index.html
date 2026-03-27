@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RentProof Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F7F5;color:#18181B;-webkit-font-smoothing:antialiased}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+    .fade{animation:fadeIn .2s ease-out}
+    @media print{nav,.no-print{display:none!important}main{padding:0!important;max-width:100%!important}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback} = React;
+
+const SB_URL = "https://uooddulmilbzjngrikvf.supabase.co";
+const SB_KEY = "sb_publishable_5WF16MLC83FxqgnOJKzlPA_Fc0Jf_sC";
+
+async function sb(path, opts={}) {
+  const headers = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" };
+  if (opts.method === "POST") headers["Prefer"] = "return=representation";
+  if (opts.method === "PATCH") headers["Prefer"] = "return=minimal";
+  const res = await fetch(`${SB_URL}/rest/v1/${path}`, { ...opts, headers: { ...headers, ...opts.headers } });
+  if (opts.method === "PATCH" || opts.method === "DELETE") return res;
+  return res.json();
+}
+async function uploadToStorage(filePath, file) {
+  const res = await fetch(`${SB_URL}/storage/v1/object/rentproof-files/${filePath}`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": file.type }, body: file });
+  if (!res.ok) throw new Error("Upload failed");
+  return `${SB_URL}/storage/v1/object/public/rentproof-files/${filePath}`;
+}
+const fmtMoney = (cents) => "$" + (cents / 100).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0});
+const monthNow = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
+const fmtPhone = (p) => { if(!p)return"—";const d=p.replace(/\D/g,"");if(d.length===11&&d[0]==="1")return`(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;if(d.length===10)return`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;return p;};
+const normPhone = (p) => { const d=p.replace(/\D/g,"");if(d.length===10)return"+1"+d;if(d.length===11&&d[0]==="1")return"+"+d;return p;};
+const monthLabel = (m) => { if(!m)return"—";const[y,mo]=m.split("-");const names=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return`${names[parseInt(mo)]} ${y}`;};
+function calcDaysLate(dueDate) { if(!dueDate)return 0;const due=new Date(dueDate+"T00:00:00");const now=new Date();const diff=Math.floor((now-due)/(1000*60*60*24));return diff>0?diff:0; }
+function calcLateFee(daysLate, graceDays, lateFeeCents) { if(daysLate>(graceDays||5))return lateFeeCents||0;return 0; }
+function downloadCSV(filename, headers, rows) { const esc=(v)=>`"${String(v||"").replace(/"/g,'""')}"`; const csv=[headers.map(esc).join(","),...rows.map(r=>r.map(esc).join(","))].join("\n"); const blob=new Blob([csv],{type:"text/csv"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=filename;a.click(); }
+
+const DOC_TYPES = [{value:"lease",label:"Lease"},{value:"deed",label:"Deed/Title"},{value:"insurance",label:"Insurance"},{value:"inspection",label:"Inspection"},{value:"tax",label:"Tax Bill"},{value:"certificate",label:"Certificate"},{value:"survey",label:"Survey"},{value:"financial",label:"Financial"},{value:"id",label:"Tenant ID"},{value:"photo",label:"Photo"},{value:"other",label:"Other"}];
+const DOC_ICONS = {lease:"📋",deed:"🏠",insurance:"🛡️",inspection:"🔍",tax:"💰",certificate:"📜",survey:"📐",financial:"📊",id:"🪪",photo:"📸",other:"📎"};
+const PAY_METHODS = [{value:"zelle",label:"Zelle"},{value:"venmo",label:"Venmo"},{value:"cashapp",label:"Cash App"},{value:"check",label:"Check"},{value:"cash",label:"Cash"},{value:"other",label:"Other"}];
+const STATUS_COLORS = {pending:"#94A3B8",proof_uploaded:"#D97706",verified:"#059669",overdue:"#DC2626"};
+const STATUS_LABELS = {pending:"Awaiting Proof",proof_uploaded:"Proof Uploaded",verified:"Verified",overdue:"Overdue"};
+
+const Input = ({label,...props}) => <div style={{display:"flex",flexDirection:"column",gap:4}}>{label && <label style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase",letterSpacing:".5px"}}>{label}</label>}<input style={{width:"100%",padding:"10px 12px",border:"1.5px solid #E2E8F0",borderRadius:8,fontSize:13,fontFamily:"inherit",outline:"none",background:"#FAFAFA"}} {...props}/></div>;
+const Select = ({label,options,...props}) => <div style={{display:"flex",flexDirection:"column",gap:4}}>{label && <label style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase",letterSpacing:".5px"}}>{label}</label>}<select style={{width:"100%",padding:"10px 12px",border:"1.5px solid #E2E8F0",borderRadius:8,fontSize:13,fontFamily:"inherit",outline:"none",background:"#FAFAFA",appearance:"none"}} {...props}>{options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></div>;
+const Btn = ({children,variant="primary",small,...props}) => { const s={primary:{background:"#059669",color:"white",border:"none"},outline:{background:"white",color:"#18181B",border:"1px solid #E2E8F0"},danger:{background:"#FEF2F2",color:"#DC2626",border:"1px solid #FECACA"},ghost:{background:"transparent",color:"#64748B",border:"none"}}; return <button style={{...s[variant],padding:small?"5px 10px":"10px 16px",borderRadius:8,fontSize:small?11:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit",display:"inline-flex",alignItems:"center",gap:6}} {...props}>{children}</button>; };
+const Card = ({title,action,children}) => <div style={{background:"white",border:"1px solid #E5E7EB",borderRadius:12,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",overflow:"hidden",marginBottom:16}}>{title && <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 18px",borderBottom:"1px solid #E5E7EB"}}><div style={{fontSize:13,fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",color:"#475569"}}>{title}</div>{action}</div>}<div>{children}</div></div>;
+const Empty = ({msg}) => <div style={{textAlign:"center",padding:40,color:"#94A3B8",fontSize:14}}>{msg}</div>;
+const Badge = ({color,children}) => <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:6,fontSize:10,fontWeight:700,background:color+"20",color}}>{children}</span>;
+
+function App() {
+  const [tab, setTab] = useState("dash");
+  const [data, setData] = useState({properties:[],tenants:[],payments:[],documents:[],settings:{}});
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [modal, setModal] = useState(null);
+  const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(null),3000); };
+  const refresh = useCallback(async () => {
+    try {
+      const [properties,tenants,payments,documents,settingsArr] = await Promise.all([
+        sb("properties?order=name"),
+        sb("tenants?active=eq.true&order=name&select=*,properties(id,name,address)"),
+        sb("payments?order=created_at.desc&limit=500&select=*,tenants(id,name,unit,phone,email,payment_method,property_id,rent_amount,due_day,grace_days,late_fee,properties(name,address))"),
+        sb("documents?order=created_at.desc&limit=200&select=*,properties(name),tenants(name)"),
+        sb("settings?limit=1"),
+      ]);
+      setData({properties:properties||[],tenants:tenants||[],payments:payments||[],documents:documents||[],settings:settingsArr?.[0]||{}});
+    } catch(e){console.error(e);}
+    setLoading(false);
+  },[]);
+  useEffect(()=>{refresh();},[refresh]);
+
+  if (loading) return <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><div style={{width:32,height:32,border:"3px solid #E5E7EB",borderTopColor:"#059669",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/><p style={{color:"#64748B",marginTop:12,fontSize:14}}>Loading RentProof...</p></div>;
+
+  const {properties,tenants,payments,documents,settings} = data;
+  const pending = payments.filter(p=>p.status==="proof_uploaded");
+  const tabs = [{id:"dash",label:"Dashboard",icon:"📊"},{id:"properties",label:"Properties",icon:"🏠"},{id:"tenants",label:"Tenants",icon:"👤"},{id:"payments",label:"Payments",icon:"💰",badge:pending.length},{id:"rentroll",label:"Rent Roll",icon:"📄"},{id:"vault",label:"Vault",icon:"🔒"},{id:"settings",label:"Settings",icon:"⚙️"}];
+
+  return <div style={{minHeight:"100vh",background:"#F7F7F5"}}>
+    <nav className="no-print" style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 20px",background:"white",borderBottom:"1px solid #E5E7EB",position:"sticky",top:0,zIndex:50}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:28,height:28,background:"#059669",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontWeight:800,fontSize:13}}>R</div><span style={{fontWeight:800,fontSize:16,letterSpacing:-0.5}}>Rent<span style={{color:"#059669"}}>Proof</span></span></div>
+      <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>{tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:4,padding:"6px 10px",border:"none",background:tab===t.id?"#ECFDF5":"transparent",borderRadius:6,fontSize:11,fontWeight:600,color:tab===t.id?"#059669":"#64748B",cursor:"pointer",fontFamily:"inherit",position:"relative"}}><span style={{fontSize:13}}>{t.icon}</span>{t.label}{t.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#DC2626",color:"white",fontSize:8,fontWeight:800,width:15,height:15,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{t.badge}</span>}</button>)}</div>
+    </nav>
+    <main style={{maxWidth:900,margin:"0 auto",padding:"20px 16px"}}>
+      {tab==="dash"&&<DashTab data={data} setTab={setTab}/>}
+      {tab==="properties"&&<PropertiesTab data={data} refresh={refresh} showToast={showToast}/>}
+      {tab==="tenants"&&<TenantsTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
+      {tab==="payments"&&<PaymentsTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
+      {tab==="rentroll"&&<RentRollTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
+      {tab==="vault"&&<VaultTab data={data} refresh={refresh} showToast={showToast}/>}
+      {tab==="settings"&&<SettingsTab data={data} refresh={refresh} showToast={showToast}/>}
+    </main>
+    {toast&&<div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#18181B",color:"white",padding:"10px 20px",borderRadius:8,fontSize:13,fontWeight:600,zIndex:100,boxShadow:"0 4px 20px rgba(0,0,0,0.2)"}}>{toast}</div>}
+    {modal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:60,padding:20}} onClick={()=>setModal(null)}><div style={{background:"white",borderRadius:14,padding:24,maxWidth:660,width:"100%",maxHeight:"90vh",overflow:"auto",position:"relative"}} onClick={e=>e.stopPropagation()}><button style={{position:"absolute",top:12,right:12,background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#94A3B8"}} onClick={()=>setModal(null)}>✕</button>{modal}</div></div>}
+  </div>;
+}
+
+/* ═══ DASHBOARD ═══ */
+function DashTab({data,setTab}) {
+  const {properties,tenants,payments}=data;const month=monthNow();const thisMonth=payments.filter(p=>p.month===month);
+  const collected=thisMonth.filter(p=>p.status==="verified").reduce((s,p)=>s+p.amount,0);
+  const expected=tenants.reduce((s,t)=>s+t.rent_amount,0);
+  const pendingCount=payments.filter(p=>p.status==="proof_uploaded").length;
+  const paidIds=new Set(thisMonth.map(p=>p.tenant_id));
+  const notPaid=tenants.filter(t=>!paidIds.has(t.id)).length + thisMonth.filter(p=>p.status!=="verified").length;
+  const Stat=({label,value,sub,color="#18181B",onClick})=><div onClick={onClick} style={{background:"white",borderRadius:10,padding:16,borderTop:`3px solid ${color}`,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",cursor:onClick?"pointer":"default"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",marginBottom:4,textTransform:"uppercase",letterSpacing:".5px"}}>{label}</div><div style={{fontSize:26,fontWeight:800,color,letterSpacing:-1}}>{value}</div>{sub&&<div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{sub}</div>}</div>;
+  return <div className="fade">
+    <h1 style={{fontSize:22,fontWeight:800}}>Dashboard</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{monthLabel(month)} · {properties.length} properties · {tenants.length} tenants</p>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
+      <Stat label="Properties" value={properties.length} color="#2563EB"/>
+      <Stat label="Collected" value={fmtMoney(collected)} sub={`of ${fmtMoney(expected)} expected`} color="#059669"/>
+      <Stat label="Needs Approval" value={pendingCount} color="#D97706" onClick={()=>setTab("payments")}/>
+      <Stat label="Not Paid" value={notPaid} color="#DC2626" onClick={()=>setTab("rentroll")}/>
+    </div>
+  </div>;
+}
+
+/* ═══ PROPERTIES ═══ */
+function PropertiesTab({data,refresh,showToast}) {
+  const {properties,tenants}=data;const [form,setForm]=useState({name:"",address:"",type:"residential",units:""});
+  const add=async()=>{if(!form.name)return showToast("Name required");const u=form.units?form.units.split(",").map(s=>s.trim()).filter(Boolean):[];await sb("properties",{method:"POST",body:JSON.stringify({name:form.name,address:form.address,type:form.type,units:u})});setForm({name:"",address:"",type:"residential",units:""});refresh();showToast("Property added!");};
+  const del=async(id)=>{if(tenants.some(t=>t.property_id===id))return showToast("Remove tenants first");if(!confirm("Delete?"))return;await sb(`properties?id=eq.${id}`,{method:"DELETE"});refresh();showToast("Deleted");};
+  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Properties</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{properties.length} properties</p>
+    <Card title="Add New Property"><div style={{padding:18}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Property Name *" placeholder="e.g. 412 Maple Ave" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><Input label="Address" placeholder="Full address" value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/><Select label="Type" options={[{value:"residential",label:"Residential"},{value:"commercial",label:"Commercial"},{value:"mixed",label:"Mixed"}]} value={form.type} onChange={e=>setForm({...form,type:e.target.value})}/><Input label="Units (comma separated)" placeholder="1A, 1B, 2A" value={form.units} onChange={e=>setForm({...form,units:e.target.value})}/></div><div style={{marginTop:12}}><Btn onClick={add}>+ Add Property</Btn></div></div></Card>
+    {properties.map(p=>{const pts=tenants.filter(t=>t.property_id===p.id);return <Card key={p.id} title={<span>🏠 {p.name}</span>} action={<Btn variant="danger" small onClick={()=>del(p.id)}>Delete</Btn>}><div style={{padding:18}}><div style={{fontSize:13,color:"#64748B",marginBottom:8}}>{p.address||"No address"}</div>{p.units?.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>{p.units.map((u,i)=><span key={i} style={{background:"#F1F5F9",padding:"3px 10px",borderRadius:6,fontSize:11,fontWeight:600,color:"#475569"}}>{u}</span>)}</div>}<div style={{fontSize:12,fontWeight:600,color:"#059669"}}>{pts.length} tenant{pts.length!==1?"s":""}</div>{pts.map(t=><div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:13}}><span style={{width:24,height:24,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:10}}>{t.name[0]}</span>{t.name} · Unit {t.unit||"—"} · {fmtMoney(t.rent_amount)}/mo</div>)}</div></Card>;})}
+    {properties.length===0&&<Empty msg="No properties yet. Add your first property above."/>}
+  </div>;
+}
+
+/* ═══ TENANTS ═══ */
+function TenantsTab({data,refresh,showToast,setModal}) {
+  const {properties,tenants}=data;const [form,setForm]=useState({name:"",phone:"",email:"",unit:"",rent_amount:"",payment_method:"zelle",due_day:"1",grace_days:"5",late_fee:"50",property_id:"",lease_start:"",lease_end:""});
+  const add=async()=>{if(!form.name||!form.phone||!form.rent_amount)return showToast("Name, phone, rent required");if(!form.property_id)return showToast("Select a property");await sb("tenants",{method:"POST",body:JSON.stringify({name:form.name,phone:normPhone(form.phone),email:form.email||null,unit:form.unit||null,rent_amount:Math.round(parseFloat(form.rent_amount)*100),payment_method:form.payment_method,due_day:parseInt(form.due_day)||1,grace_days:parseInt(form.grace_days)||5,late_fee:Math.round(parseFloat(form.late_fee||0)*100),property_id:form.property_id,lease_start:form.lease_start||null,lease_end:form.lease_end||null})});setForm({name:"",phone:"",email:"",unit:"",rent_amount:"",payment_method:"zelle",due_day:"1",grace_days:"5",late_fee:"50",property_id:"",lease_start:"",lease_end:""});refresh();showToast("Tenant added!");};
+  const remove=async(id)=>{if(!confirm("Remove tenant?"))return;await sb(`tenants?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({active:false})});refresh();showToast("Removed");};
+  const sendReminder=async(tenant)=>{const month=monthNow();const ex=await sb(`payments?tenant_id=eq.${tenant.id}&month=eq.${month}`);let pid;if(!ex||!ex.length){const c=await sb("payments",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,month,amount:tenant.rent_amount,status:"pending",due_date:`${month}-${String(tenant.due_day||1).padStart(2,"0")}`})});pid=c[0]?.id;}else{pid=ex[0].id;}const link=`${window.location.origin}/pay.html?id=${pid}`;const msg=`Hi ${tenant.name.split(" ")[0]}, your rent of ${fmtMoney(tenant.rent_amount)}${tenant.unit?` for Unit ${tenant.unit}`:""} is due. Pay via ${tenant.payment_method} and upload proof here: ${link}`;try{const r=await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:tenant.phone,message:msg})});if(r.ok){await sb("reminders",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,type:"due_reminder",message:msg,month})});showToast(`Reminder sent to ${tenant.name}!`);}else showToast("SMS failed — check Twilio");}catch(e){showToast("SMS error");}refresh();};
+  const sendAll=async()=>{if(!confirm(`Send to all ${tenants.length} tenants?`))return;for(const t of tenants)await sendReminder(t);};
+  const grouped={};tenants.forEach(t=>{const k=t.properties?.name||"Unassigned";if(!grouped[k])grouped[k]=[];grouped[k].push(t);});
+  return <div className="fade">
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}><div><h1 style={{fontSize:22,fontWeight:800}}>Tenants</h1><p style={{fontSize:13,color:"#94A3B8"}}>{tenants.length} active</p></div>{tenants.length>0&&<Btn onClick={sendAll}>📱 Send All Reminders</Btn>}</div>
+    <Card title="Add New Tenant"><div style={{padding:18}}>{properties.length===0?<div style={{color:"#DC2626",fontSize:13,fontWeight:600}}>⚠️ Add a property first.</div>:<><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Full Name *" placeholder="John Smith" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><Input label="Phone *" placeholder="(908) 555-1234" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/><Input label="Email" placeholder="tenant@email.com" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/><Select label="Property *" options={[{value:"",label:"Select property..."},...properties.map(p=>({value:p.id,label:p.name}))]} value={form.property_id} onChange={e=>setForm({...form,property_id:e.target.value})}/><Input label="Unit" placeholder="e.g. 2A" value={form.unit} onChange={e=>setForm({...form,unit:e.target.value})}/><Input label="Rent ($/mo) *" type="number" placeholder="1500" value={form.rent_amount} onChange={e=>setForm({...form,rent_amount:e.target.value})}/><Select label="Payment Method" options={PAY_METHODS} value={form.payment_method} onChange={e=>setForm({...form,payment_method:e.target.value})}/><Input label="Due Day" type="number" min="1" max="28" value={form.due_day} onChange={e=>setForm({...form,due_day:e.target.value})}/><Input label="Grace Period (days)" type="number" value={form.grace_days} onChange={e=>setForm({...form,grace_days:e.target.value})}/><Input label="Late Fee ($)" type="number" placeholder="50" value={form.late_fee} onChange={e=>setForm({...form,late_fee:e.target.value})}/><Input label="Lease Start" type="date" value={form.lease_start} onChange={e=>setForm({...form,lease_start:e.target.value})}/><Input label="Lease End" type="date" value={form.lease_end} onChange={e=>setForm({...form,lease_end:e.target.value})}/></div><div style={{marginTop:12}}><Btn onClick={add}>+ Add Tenant</Btn></div></>}</div></Card>
+    {Object.entries(grouped).map(([n,pts])=><Card key={n} title={`🏠 ${n} (${pts.length})`}>{pts.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:32,height:32,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13}}>{t.name[0]}</div><div><div style={{fontWeight:700,fontSize:14}}>{t.name}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {t.unit||"—"} · {fmtPhone(t.phone)} · {t.payment_method} · Due {t.due_day||1}st · Grace {t.grace_days||5}d · Late fee {fmtMoney(t.late_fee||0)}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15,color:"#059669"}}>{fmtMoney(t.rent_amount)}</div><Btn variant="outline" small onClick={()=>sendReminder(t)}>📱</Btn><Btn variant="danger" small onClick={()=>remove(t.id)}>✕</Btn></div></div>)}</Card>)}
+    {tenants.length===0&&<Empty msg="No tenants yet. Add a property first."/>}
+  </div>;
+}
+
+/* ═══ PAYMENTS (with late fee auto-calc) ═══ */
+function PaymentsTab({data,refresh,showToast,setModal}) {
+  const {payments}=data;const [filter,setFilter]=useState("all");
+  const filtered=payments.filter(p=>{if(filter==="review")return p.status==="proof_uploaded";if(filter==="verified")return p.status==="verified";if(filter==="overdue")return p.status==="pending"||p.status==="overdue";return true;});
+  const approve=async(p)=>{await sb(`payments?id=eq.${p.id}`,{method:"PATCH",body:JSON.stringify({status:"verified",approved_at:new Date().toISOString(),receipt_sent:true})});const rn=`RP-${Date.now().toString(36).toUpperCase()}`;await sb("receipts",{method:"POST",body:JSON.stringify({payment_id:p.id,tenant_id:p.tenant_id,receipt_number:rn,tenant_name:p.tenants?.name||"Tenant",unit:p.tenants?.unit,property_address:p.tenants?.properties?.address,amount:p.amount,rental_period:p.month,payment_method:p.tenants?.payment_method,date_received:new Date().toISOString().split("T")[0],date_verified:new Date().toISOString(),proof_reference:p.proof_url})});try{await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:p.tenants?.phone,message:`✅ RentProof Receipt: Your ${p.month} rent of ${fmtMoney(p.amount)} verified. Receipt #${rn}. Thank you!`})});}catch(e){}refresh();showToast(`Approved! Receipt sent to ${p.tenants?.name}`);};
+  const viewProof=(p)=>setModal(<div><h2 style={{fontSize:18,fontWeight:800,marginBottom:4}}>Proof of Payment</h2><p style={{fontSize:13,color:"#64748B",marginBottom:12}}>{p.tenants?.name} · Unit {p.tenants?.unit} · {p.tenants?.properties?.name} · {monthLabel(p.month)} · {fmtMoney(p.amount)}</p>{p.proof_url?<img src={p.proof_url} alt="Proof" style={{maxWidth:"100%",borderRadius:8,marginBottom:16}}/>:<p style={{color:"#DC2626",padding:20}}>No proof uploaded yet.</p>}{p.proof_uploaded_at&&<p style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>Uploaded: {new Date(p.proof_uploaded_at).toLocaleString()}</p>}{p.status==="proof_uploaded"&&<Btn onClick={()=>{approve(p);setModal(null);}}>✅ Approve & Send Receipt</Btn>}</div>);
+  const rows=filtered.map(p=>{if(p.status==="verified")return p;const dl=calcDaysLate(p.due_date);return{...p,_daysLate:dl,_lateFee:calcLateFee(dl,p.tenants?.grace_days,p.tenants?.late_fee)};});
+  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Payments</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{payments.length} records</p>
+    <div className="no-print" style={{display:"flex",gap:6,marginBottom:16}}>{[["all","All"],["review",`Review (${payments.filter(p=>p.status==="proof_uploaded").length})`],["verified","Verified"],["overdue","Overdue"]].map(([f,l])=><button key={f} onClick={()=>setFilter(f)} style={{background:filter===f?"#059669":"#F1F5F9",color:filter===f?"white":"#64748B",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{l}</button>)}</div>
+    {rows.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"white",padding:"12px 16px",borderRadius:10,marginBottom:6,border:"1px solid #E5E7EB",borderLeft:`4px solid ${STATUS_COLORS[p.status]||"#94A3B8"}`}}><div><div style={{fontWeight:700,fontSize:14}}>{p.tenants?.name||"Tenant"}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {p.tenants?.unit||"—"} · {p.tenants?.properties?.name||""} · {monthLabel(p.month)}{p._daysLate>0&&<span style={{color:"#DC2626",fontWeight:700}}> · {p._daysLate}d late</span>}{p._lateFee>0&&<span style={{color:"#DC2626",fontWeight:700}}> · +{fmtMoney(p._lateFee)} fee</span>}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15}}>{fmtMoney(p.amount)}</div><Badge color={STATUS_COLORS[p.status]}>{STATUS_LABELS[p.status]}</Badge>{p.proof_url&&<Btn variant="outline" small onClick={()=>viewProof(p)}>View Proof</Btn>}{p.status==="proof_uploaded"&&<Btn small onClick={()=>approve(p)}>Approve</Btn>}</div></div>)}
+    {rows.length===0&&<Empty msg="No payments match this filter."/>}
+  </div>;
+}
+
+/* ═══ RENT ROLL (monthly view + CSV export + court docs) ═══ */
+function RentRollTab({data,refresh,showToast,setModal}) {
+  const {tenants,payments,settings}=data;const [month,setMonth]=useState(monthNow());
+  const allMonths=[];const now=new Date();for(let i=11;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);allMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);}
+  const mp=payments.filter(p=>p.month===month);
+  const rows=tenants.map(t=>{const pay=mp.find(p=>p.tenant_id===t.id);const dd=`${month}-${String(t.due_day||1).padStart(2,"0")}`;const dl=pay?(pay.status==="verified"?0:calcDaysLate(dd)):calcDaysLate(dd);const lf=calcLateFee(dl,t.grace_days,t.late_fee);const status=pay?pay.status:"no_record";return{tenant:t,pay,dl,lf,status,propName:t.properties?.name||"—"};});
+  const totalExp=tenants.reduce((s,t)=>s+t.rent_amount,0);const totalCol=rows.filter(r=>r.status==="verified").reduce((s,r)=>s+(r.pay?.amount||0),0);const totalLF=rows.reduce((s,r)=>s+r.lf,0);
+
+  const exportCSV=()=>{downloadCSV(`rentproof_rent_roll_${month}.csv`,["Tenant","Property","Unit","Rent Due","Status","Days Late","Late Fee","Amount Paid","Method","Date Verified"],rows.map(r=>[r.tenant.name,r.propName,r.tenant.unit||"",(r.tenant.rent_amount/100).toFixed(2),r.status==="verified"?"Verified":r.status==="proof_uploaded"?"Proof Uploaded":r.status==="pending"?"Pending":"Not Paid",r.dl,(r.lf/100).toFixed(2),r.pay?(r.pay.amount/100).toFixed(2):"0.00",r.tenant.payment_method,r.pay?.approved_at?new Date(r.pay.approved_at).toLocaleDateString():""]));showToast("CSV downloaded!");};
+
+  const courtDoc=(tenant)=>{const tp=payments.filter(p=>p.tenant_id===tenant.id).sort((a,b)=>a.month.localeCompare(b.month));setModal(<div>
+    <div style={{textAlign:"center",marginBottom:20}}><div style={{fontSize:20,fontWeight:800}}>PAYMENT HISTORY — COURT RECORD</div><div style={{fontSize:12,color:"#64748B",marginTop:4}}>{settings.business_name||"RentProof"} · Generated {new Date().toLocaleDateString()}</div></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16,fontSize:13}}>
+      <div><strong>Tenant:</strong> {tenant.name}</div><div><strong>Phone:</strong> {fmtPhone(tenant.phone)}</div>
+      <div><strong>Property:</strong> {tenant.properties?.name||"—"}</div><div><strong>Unit:</strong> {tenant.unit||"—"}</div>
+      <div><strong>Address:</strong> {tenant.properties?.address||"—"}</div><div><strong>Rent:</strong> {fmtMoney(tenant.rent_amount)}/mo</div>
+      <div><strong>Lease:</strong> {tenant.lease_start||"—"} to {tenant.lease_end||"—"}</div><div><strong>Method:</strong> {tenant.payment_method}</div>
+    </div>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:16}}>
+      <thead><tr style={{background:"#18181B",color:"white"}}><th style={{padding:"8px",textAlign:"left"}}>Month</th><th style={{padding:"8px",textAlign:"left"}}>Amount</th><th style={{padding:"8px",textAlign:"left"}}>Status</th><th style={{padding:"8px",textAlign:"left"}}>Days Late</th><th style={{padding:"8px",textAlign:"left"}}>Late Fee</th><th style={{padding:"8px",textAlign:"left"}}>Verified</th></tr></thead>
+      <tbody>{tp.map(p=>{const dl=p.status==="verified"?(p.is_late?p.days_late||0:0):calcDaysLate(p.due_date);const lf=calcLateFee(dl,tenant.grace_days,tenant.late_fee);return <tr key={p.id} style={{borderBottom:"1px solid #E5E7EB"}}><td style={{padding:"6px 8px"}}>{monthLabel(p.month)}</td><td style={{padding:"6px 8px"}}>{fmtMoney(p.amount)}</td><td style={{padding:"6px 8px",color:STATUS_COLORS[p.status],fontWeight:700}}>{STATUS_LABELS[p.status]||p.status}</td><td style={{padding:"6px 8px"}}>{dl}</td><td style={{padding:"6px 8px"}}>{lf>0?fmtMoney(lf):"—"}</td><td style={{padding:"6px 8px"}}>{p.approved_at?new Date(p.approved_at).toLocaleDateString():"—"}</td></tr>;})}</tbody>
+    </table>
+    {tp.length===0&&<p style={{color:"#94A3B8",textAlign:"center",padding:16}}>No payment records found.</p>}
+    <div style={{borderTop:"2px solid #18181B",paddingTop:12,fontSize:11,color:"#64748B"}}><p>Generated by RentProof ({settings.business_name||""}). Records based on landlord-verified proof of payment.</p><p style={{marginTop:8}}>Landlord: {settings.landlord_name||"—"} · {settings.landlord_phone||""} · {settings.landlord_email||""}</p></div>
+    <div style={{display:"flex",gap:8,marginTop:16}} className="no-print"><Btn onClick={()=>window.print()}>🖨️ Print / Save PDF</Btn><Btn variant="outline" onClick={()=>{downloadCSV(`rentproof_${tenant.name.replace(/\s/g,"_")}_history.csv`,["Month","Amount","Status","Days Late","Late Fee","Verified"],tp.map(p=>[p.month,(p.amount/100).toFixed(2),p.status,p.days_late||0,(p.late_fee_applied||0)/100,p.approved_at||""]));showToast("CSV exported!");}}>📥 Export CSV</Btn></div>
+  </div>);};
+
+  return <div className="fade">
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+      <div><h1 style={{fontSize:22,fontWeight:800}}>Rent Roll</h1><p style={{fontSize:13,color:"#94A3B8"}}>{monthLabel(month)} · {tenants.length} tenants</p></div>
+      <div className="no-print" style={{display:"flex",gap:8}}><select style={{padding:"8px 12px",border:"1.5px solid #E2E8F0",borderRadius:8,fontSize:13,fontFamily:"inherit",background:"white"}} value={month} onChange={e=>setMonth(e.target.value)}>{allMonths.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}</select><Btn variant="outline" onClick={exportCSV}>📥 CSV</Btn><Btn variant="outline" onClick={()=>window.print()}>🖨️ Print</Btn></div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}}>
+      <div style={{background:"white",borderRadius:10,padding:14,borderTop:"3px solid #059669"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Collected</div><div style={{fontSize:22,fontWeight:800,color:"#059669"}}>{fmtMoney(totalCol)}</div></div>
+      <div style={{background:"white",borderRadius:10,padding:14,borderTop:"3px solid #D97706"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Outstanding</div><div style={{fontSize:22,fontWeight:800,color:"#D97706"}}>{fmtMoney(totalExp-totalCol)}</div></div>
+      <div style={{background:"white",borderRadius:10,padding:14,borderTop:"3px solid #DC2626"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Late Fees Owed</div><div style={{fontSize:22,fontWeight:800,color:"#DC2626"}}>{fmtMoney(totalLF)}</div></div>
+    </div>
+    <Card><table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+      <thead><tr style={{background:"#F8FAFC"}}><th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Tenant</th><th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Property / Unit</th><th style={{padding:"10px 14px",textAlign:"right",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Rent</th><th style={{padding:"10px 14px",textAlign:"center",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Status</th><th style={{padding:"10px 14px",textAlign:"center",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Late</th><th style={{padding:"10px 14px",textAlign:"right",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}}>Fee</th><th style={{padding:"10px 14px",textAlign:"center",fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase"}} className="no-print">Actions</th></tr></thead>
+      <tbody>{rows.map(r=>{const sc=r.status==="verified"?"#059669":r.status==="proof_uploaded"?"#D97706":r.status==="pending"?"#94A3B8":"#DC2626";const sl=r.status==="verified"?"✅ Paid":r.status==="proof_uploaded"?"📸 Proof":r.status==="pending"?"⏳ Pending":"❌ None";return <tr key={r.tenant.id} style={{borderBottom:"1px solid #F1F5F9"}}><td style={{padding:"10px 14px",fontWeight:700}}>{r.tenant.name}</td><td style={{padding:"10px 14px",color:"#64748B"}}>{r.propName} / {r.tenant.unit||"—"}</td><td style={{padding:"10px 14px",textAlign:"right",fontWeight:700}}>{fmtMoney(r.tenant.rent_amount)}</td><td style={{padding:"10px 14px",textAlign:"center",color:sc,fontWeight:700,fontSize:12}}>{sl}</td><td style={{padding:"10px 14px",textAlign:"center",color:r.dl>0?"#DC2626":"#059669",fontWeight:700}}>{r.dl>0?r.dl+"d":"—"}</td><td style={{padding:"10px 14px",textAlign:"right",color:r.lf>0?"#DC2626":"#94A3B8",fontWeight:700}}>{r.lf>0?fmtMoney(r.lf):"—"}</td><td style={{padding:"10px 14px",textAlign:"center"}} className="no-print"><Btn variant="outline" small onClick={()=>courtDoc(r.tenant)}>📄 History</Btn></td></tr>;})}</tbody>
+    </table>{rows.length===0&&<Empty msg="No tenants."/>}</Card>
+  </div>;
+}
+
+/* ═══ VAULT ═══ */
+function VaultTab({data,refresh,showToast}) {
+  const {documents,properties,tenants}=data;const [uploading,setUploading]=useState(false);const [df,setDf]=useState({type:"other",property_id:"",tenant_id:""});
+  const upload=async(e)=>{const file=e.target.files[0];if(!file)return;setUploading(true);try{const path=`vault/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,"")}`;const url=await uploadToStorage(path,file);await sb("documents",{method:"POST",body:JSON.stringify({name:file.name,type:df.type,file_url:url,file_size:(file.size/1024).toFixed(0)+" KB",property_id:df.property_id||null,tenant_id:df.tenant_id||null})});refresh();showToast("Uploaded!");}catch(err){showToast("Failed: "+err.message);}setUploading(false);e.target.value="";};
+  const del=async(id)=>{if(!confirm("Delete?"))return;await sb(`documents?id=eq.${id}`,{method:"DELETE"});refresh();showToast("Deleted");};
+  const byProp={};const other=[];documents.forEach(d=>{if(d.property_id&&d.properties?.name){if(!byProp[d.properties.name])byProp[d.properties.name]=[];byProp[d.properties.name].push(d);}else other.push(d);});
+  const Row=({d})=><div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 18px",borderBottom:"1px solid #F1F5F9"}}><span style={{fontSize:22}}>{DOC_ICONS[d.type]||"📎"}</span><div style={{flex:1}}><div style={{fontWeight:700,fontSize:13}}>{d.name}</div><div style={{fontSize:11,color:"#94A3B8"}}>{d.type} · {d.file_size} · {new Date(d.created_at).toLocaleDateString()}{d.tenants?.name?` · ${d.tenants.name}`:""}</div></div><a href={d.file_url} target="_blank" rel="noopener noreferrer"><Btn variant="outline" small>View</Btn></a><Btn variant="danger" small onClick={()=>del(d.id)}>✕</Btn></div>;
+  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Landlord Vault</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{documents.length} documents</p>
+    <Card title="Upload Document"><div style={{padding:18}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}><Select label="Type" options={DOC_TYPES} value={df.type} onChange={e=>setDf({...df,type:e.target.value})}/><Select label="Property" options={[{value:"",label:"None"},...properties.map(p=>({value:p.id,label:p.name}))]} value={df.property_id} onChange={e=>setDf({...df,property_id:e.target.value})}/><Select label="Tenant" options={[{value:"",label:"None"},...tenants.map(t=>({value:t.id,label:t.name}))]} value={df.tenant_id} onChange={e=>setDf({...df,tenant_id:e.target.value})}/></div><label style={{display:"inline-flex",alignItems:"center",gap:6,background:"#059669",color:"white",padding:"10px 16px",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer"}}>{uploading?"Uploading...":"📄 Choose File & Upload"}<input type="file" style={{display:"none"}} onChange={upload} disabled={uploading}/></label></div></Card>
+    {Object.entries(byProp).map(([n,docs])=><Card key={n} title={`🏠 ${n}`}>{docs.map(d=><Row key={d.id} d={d}/>)}</Card>)}
+    {other.length>0&&<Card title="📎 General">{other.map(d=><Row key={d.id} d={d}/>)}</Card>}
+    {documents.length===0&&<Empty msg="Vault empty. Upload leases, deeds, insurance, inspections."/>}
+  </div>;
+}
+
+/* ═══ SETTINGS ═══ */
+function SettingsTab({data,refresh,showToast}) {
+  const {settings}=data;const [form,setForm]=useState(settings);useEffect(()=>{setForm(settings);},[settings]);
+  const save=async()=>{if(!settings.id)return showToast("No settings");await sb(`settings?id=eq.${settings.id}`,{method:"PATCH",body:JSON.stringify(form)});refresh();showToast("Saved!");};
+  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Settings</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>Configure RentProof</p>
+    <Card title="Business Info"><div style={{padding:18}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Business Name" value={form.business_name||""} onChange={e=>setForm({...form,business_name:e.target.value})}/><Input label="Your Name" value={form.landlord_name||""} onChange={e=>setForm({...form,landlord_name:e.target.value})}/><Input label="Email" value={form.landlord_email||""} onChange={e=>setForm({...form,landlord_email:e.target.value})}/><Input label="Phone" value={form.landlord_phone||""} onChange={e=>setForm({...form,landlord_phone:e.target.value})}/></div></div></Card>
+    <Card title="Reminders"><div style={{padding:18}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Reminder Day" type="number" min="1" max="28" value={form.reminder_day||1} onChange={e=>setForm({...form,reminder_day:parseInt(e.target.value)})}/><Input label="Late Reminder After (days)" type="number" value={form.late_reminder_days||3} onChange={e=>setForm({...form,late_reminder_days:parseInt(e.target.value)})}/></div><div style={{marginTop:12,display:"flex",alignItems:"center",gap:8}}><input type="checkbox" checked={form.auto_send_receipts||false} onChange={e=>setForm({...form,auto_send_receipts:e.target.checked})}/><label style={{fontSize:13}}>Auto-send receipts on approval</label></div><div style={{marginTop:16}}><Btn onClick={save}>Save Settings</Btn></div></div></Card>
+    <Card title="Services"><div style={{padding:18,fontSize:13}}><div style={{marginBottom:6}}>✅ <strong>Supabase:</strong> Connected</div><div style={{marginBottom:6}}>✅ <strong>Twilio:</strong> +1 (888) 411-6139 <span style={{fontSize:11,color:"#D97706"}}>(pending verification)</span></div><div>✅ <strong>Storage:</strong> rentproof-files</div></div></Card>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

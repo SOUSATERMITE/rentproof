@@ -1,0 +1,11 @@
+{
+  "buildCommand": "echo done",
+  "installCommand": "echo done",
+  "outputDirectory": "public",
+  "crons": [
+    {
+      "path": "/api/cron-reminders",
+      "schedule": "0 14 1 * *"
+    }
+  ]
+}
