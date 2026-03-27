@@ -244,13 +244,28 @@ async function generateDemandLetterPDF({landlordName,landlordPhone,landlordEmail
   return doc.output("blob");
 }
 
+/* ═══ SHARED SMS HELPER ═══ */
+async function sendReminderSMS(tenant, showToast, refresh) {
+  const month=monthNow();
+  const ex=await sb(`payments?tenant_id=eq.${tenant.id}&month=eq.${month}`);
+  let pid;
+  if(!ex||!ex.length){const c=await sb("payments",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,month,amount:tenant.rent_amount,status:"pending",due_date:`${month}-${String(tenant.due_day||1).padStart(2,"0")}`})});pid=c[0]?.id;}
+  else{pid=ex[0].id;}
+  const link=`${window.location.origin}/pay.html?id=${pid}`;
+  const msg=`Hi ${tenant.name.split(" ")[0]}, your rent of ${fmtMoney(tenant.rent_amount)}${tenant.unit?` for Unit ${tenant.unit}`:""} is due. Pay via ${tenant.payment_method} and upload proof here: ${link} Reply STOP to opt out.`;
+  try{const r=await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:tenant.phone,message:msg})});if(r.ok){await sb("reminders",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,type:"due_reminder",message:msg,month})});showToast(`Reminder sent to ${tenant.name}!`);}else showToast("SMS failed — check Twilio");}catch(e){showToast("SMS error");}
+  if(refresh)refresh();
+}
+
 function App() {
   const [tab, setTab] = useState("dash");
+  const [view, setView] = useState(null);
   const [data, setData] = useState({properties:[],tenants:[],payments:[],documents:[],settings:{}});
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
   const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(null),3000); };
+  const navigate = (newTab, newView=null) => { setTab(newTab); setView(newView); window.scrollTo(0,0); };
   const refresh = useCallback(async () => {
     try {
       const [properties,tenants,payments,documents,settingsArr] = await Promise.all([
@@ -274,17 +289,26 @@ function App() {
   const pending = payments.filter(p=>p.status==="proof_uploaded");
   const tabs = [{id:"dash",label:"Dashboard",icon:"📊"},{id:"properties",label:"Properties",icon:"🏠"},{id:"tenants",label:"Tenants",icon:"👤"},{id:"payments",label:"Payments",icon:"💰",badge:pending.length},{id:"rentroll",label:"Rent Roll",icon:"📄"},{id:"vault",label:"Vault",icon:"🔒"},{id:"settings",label:"Settings",icon:"⚙️"}];
 
+  let breadcrumb = null;
+  if(view?.type==="property"){const p=properties.find(p=>p.id===view.id);breadcrumb=<div style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"#64748B",marginBottom:16}}><button onClick={()=>navigate("properties")} style={{background:"none",border:"none",color:"#059669",cursor:"pointer",fontWeight:600,fontSize:13,padding:0,fontFamily:"inherit"}}>Properties</button><span>›</span><span style={{color:"#18181B",fontWeight:700}}>{p?.name||"Property"}</span></div>;}
+  else if(view?.type==="tenant"){const t=tenants.find(t=>t.id===view.id);breadcrumb=<div style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"#64748B",marginBottom:16}}><button onClick={()=>navigate("tenants")} style={{background:"none",border:"none",color:"#059669",cursor:"pointer",fontWeight:600,fontSize:13,padding:0,fontFamily:"inherit"}}>Tenants</button><span>›</span><span style={{color:"#18181B",fontWeight:700}}>{t?.name||"Tenant"}</span></div>;}
+
+  const shared={data,refresh,showToast,setModal,navigate};
+
   return <div style={{minHeight:"100vh",background:"#F7F7F5"}}>
     <nav className="no-print" style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 20px",background:"white",borderBottom:"1px solid #E5E7EB",position:"sticky",top:0,zIndex:50}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:28,height:28,background:"#059669",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontWeight:800,fontSize:13}}>R</div><span style={{fontWeight:800,fontSize:16,letterSpacing:-0.5}}>Rent<span style={{color:"#059669"}}>Proof</span></span></div>
-      <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>{tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:4,padding:"6px 10px",border:"none",background:tab===t.id?"#ECFDF5":"transparent",borderRadius:6,fontSize:11,fontWeight:600,color:tab===t.id?"#059669":"#64748B",cursor:"pointer",fontFamily:"inherit",position:"relative"}}><span style={{fontSize:13}}>{t.icon}</span>{t.label}{t.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#DC2626",color:"white",fontSize:8,fontWeight:800,width:15,height:15,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{t.badge}</span>}</button>)}</div>
+      <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>{tabs.map(t=><button key={t.id} onClick={()=>navigate(t.id)} style={{display:"flex",alignItems:"center",gap:4,padding:"6px 10px",border:"none",background:tab===t.id?"#ECFDF5":"transparent",borderRadius:6,fontSize:11,fontWeight:600,color:tab===t.id?"#059669":"#64748B",cursor:"pointer",fontFamily:"inherit",position:"relative"}}><span style={{fontSize:13}}>{t.icon}</span>{t.label}{t.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#DC2626",color:"white",fontSize:8,fontWeight:800,width:15,height:15,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{t.badge}</span>}</button>)}</div>
     </nav>
     <main style={{maxWidth:900,margin:"0 auto",padding:"20px 16px"}}>
-      {tab==="dash"&&<DashTab data={data} setTab={setTab}/>}
-      {tab==="properties"&&<PropertiesTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
-      {tab==="tenants"&&<TenantsTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
-      {tab==="payments"&&<PaymentsTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
-      {tab==="rentroll"&&<RentRollTab data={data} refresh={refresh} showToast={showToast} setModal={setModal}/>}
+      {breadcrumb}
+      {tab==="dash"&&<DashTab {...shared}/>}
+      {tab==="properties"&&!view&&<PropertiesTab {...shared}/>}
+      {tab==="properties"&&view?.type==="property"&&<PropertyDetailView {...shared} propertyId={view.id}/>}
+      {tab==="tenants"&&!view&&<TenantsTab {...shared}/>}
+      {tab==="tenants"&&view?.type==="tenant"&&<TenantDetailView {...shared} tenantId={view.id}/>}
+      {tab==="payments"&&<PaymentsTab {...shared}/>}
+      {tab==="rentroll"&&<RentRollTab {...shared}/>}
       {tab==="vault"&&<VaultTab data={data} refresh={refresh} showToast={showToast}/>}
       {tab==="settings"&&<SettingsTab data={data} refresh={refresh} showToast={showToast}/>}
     </main>
@@ -294,22 +318,37 @@ function App() {
 }
 
 /* ═══ DASHBOARD ═══ */
-function DashTab({data,setTab}) {
-  const {properties,tenants,payments}=data;const month=monthNow();const thisMonth=payments.filter(p=>p.month===month);
+function DashTab({data,navigate,showToast,refresh}) {
+  const {properties,tenants,payments}=data;
+  const month=monthNow();
+  const thisMonth=payments.filter(p=>p.month===month);
   const collected=thisMonth.filter(p=>p.status==="verified").reduce((s,p)=>s+p.amount,0);
   const expected=tenants.reduce((s,t)=>s+t.rent_amount,0);
   const pendingCount=payments.filter(p=>p.status==="proof_uploaded").length;
-  const paidIds=new Set(thisMonth.map(p=>p.tenant_id));
-  const notPaid=tenants.filter(t=>!paidIds.has(t.id)).length + thisMonth.filter(p=>p.status!=="verified").length;
-  const Stat=({label,value,sub,color="#18181B",onClick})=><div onClick={onClick} style={{background:"white",borderRadius:10,padding:16,borderTop:`3px solid ${color}`,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",cursor:onClick?"pointer":"default"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",marginBottom:4,textTransform:"uppercase",letterSpacing:".5px"}}>{label}</div><div style={{fontSize:26,fontWeight:800,color,letterSpacing:-1}}>{value}</div>{sub&&<div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{sub}</div>}</div>;
+  const verifiedIds=new Set(thisMonth.filter(p=>p.status==="verified").map(p=>p.tenant_id));
+  const unpaidTenants=tenants.filter(t=>!verifiedIds.has(t.id));
+  const recent=[...payments].slice(0,10);
+  const [sending,setSending]=useState({});
+  const sendOne=async(t)=>{setSending(s=>({...s,[t.id]:true}));await sendReminderSMS(t,showToast,refresh);setSending(s=>({...s,[t.id]:false}));};
+  const Stat=({label,value,sub,color="#18181B",onClick})=><div onClick={onClick} style={{background:"white",borderRadius:10,padding:18,borderTop:`3px solid ${color}`,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",cursor:onClick?"pointer":"default"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",marginBottom:4,textTransform:"uppercase",letterSpacing:".5px"}}>{label}</div><div style={{fontSize:26,fontWeight:800,color,letterSpacing:-1}}>{value}</div>{sub&&<div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{sub}</div>}</div>;
   return <div className="fade">
-    <h1 style={{fontSize:22,fontWeight:800}}>Dashboard</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{monthLabel(month)} · {properties.length} properties · {tenants.length} tenants</p>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
-      <Stat label="Properties" value={properties.length} color="#2563EB"/>
-      <Stat label="Collected" value={fmtMoney(collected)} sub={`of ${fmtMoney(expected)} expected`} color="#059669"/>
-      <Stat label="Needs Approval" value={pendingCount} color="#D97706" onClick={()=>setTab("payments")}/>
-      <Stat label="Not Paid" value={notPaid} color="#DC2626" onClick={()=>setTab("rentroll")}/>
+    <div style={{marginBottom:20}}><h1 style={{fontSize:24,fontWeight:800,letterSpacing:-0.5}}>Dashboard</h1><p style={{fontSize:13,color:"#94A3B8",marginTop:2}}>{monthLabel(month)} · {properties.length} {properties.length===1?"property":"properties"} · {tenants.length} {tenants.length===1?"tenant":"tenants"}</p></div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:28}}>
+      <Stat label="Properties" value={properties.length} color="#2563EB" onClick={()=>navigate("properties")}/>
+      <Stat label="Collected" value={fmtMoney(collected)} sub={`of ${fmtMoney(expected)} expected`} color="#059669" onClick={()=>navigate("rentroll")}/>
+      <Stat label="Needs Approval" value={pendingCount} color="#D97706" onClick={()=>navigate("payments")}/>
+      <Stat label="Not Paid" value={unpaidTenants.length} color="#DC2626" onClick={()=>navigate("rentroll")}/>
     </div>
+    {unpaidTenants.length>0&&<Card title={`⚠️ Unpaid This Month (${unpaidTenants.length})`}>
+      {unpaidTenants.map(t=>{const pay=thisMonth.find(p=>p.tenant_id===t.id);const status=pay?pay.status:"no_record";const sc=STATUS_COLORS[status]||"#DC2626";const sl=status==="proof_uploaded"?"📸 Proof Uploaded":status==="pending"?"⏳ Pending":"❌ No Record";return <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:30,height:30,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:12}}>{t.name[0]}</div><div><div style={{fontWeight:700,fontSize:13}}>{t.name}</div><div style={{fontSize:11,color:"#94A3B8"}}>{t.properties?.name||"—"}{t.unit?` · Unit ${t.unit}`:""}</div></div></div><div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:11,fontWeight:700,color:sc}}>{sl}</span><span style={{fontWeight:800,fontSize:14,color:"#18181B"}}>{fmtMoney(t.rent_amount)}</span><Btn small onClick={()=>sendOne(t)} disabled={!!sending[t.id]}>{sending[t.id]?"Sending...":"📱 Remind"}</Btn></div></div>;})}
+    </Card>}
+    <Card title="Recent Activity">
+      {recent.length===0&&<Empty msg="No payment activity yet."/>}
+      {recent.map(p=>{const sc=STATUS_COLORS[p.status]||"#94A3B8";return <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:8,height:8,borderRadius:"50%",background:sc,flexShrink:0}}/><div><div style={{fontWeight:700,fontSize:13}}>{p.tenants?.name||"Tenant"}</div><div style={{fontSize:11,color:"#94A3B8"}}>{p.tenants?.properties?.name||""}{p.tenants?.unit?` · Unit ${p.tenants.unit}`:""} · {monthLabel(p.month)}</div></div></div><div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontWeight:800,fontSize:14}}>{fmtMoney(p.amount)}</span><Badge color={sc}>{STATUS_LABELS[p.status]||p.status}</Badge><span style={{fontSize:11,color:"#94A3B8"}}>{new Date(p.created_at).toLocaleDateString()}</span></div></div>;})}
+    </Card>
+    {properties.length>0&&<Card title="Properties Overview">
+      {properties.map(p=>{const pts=tenants.filter(t=>t.property_id===p.id);const propCol=thisMonth.filter(pay=>pts.some(t=>t.id===pay.tenant_id)&&pay.status==="verified").reduce((s,pay)=>s+pay.amount,0);const propExp=pts.reduce((s,t)=>s+t.rent_amount,0);const pct=propExp>0?Math.round(propCol/propExp*100):0;return <div key={p.id} style={{padding:"14px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><div><div style={{fontWeight:700,fontSize:14}}>{p.name}</div><div style={{fontSize:11,color:"#94A3B8"}}>{p.address||"No address"} · {pts.length} tenant{pts.length!==1?"s":""}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,fontSize:14,color:"#059669"}}>{fmtMoney(propCol)}</div><div style={{fontSize:11,color:"#94A3B8"}}>of {fmtMoney(propExp)}</div></div></div><div style={{background:"#F1F5F9",borderRadius:4,height:6,overflow:"hidden"}}><div style={{width:`${pct}%`,height:"100%",background:"#059669",borderRadius:4}}/></div></div>;})}
+    </Card>}
   </div>;
 }
 
@@ -322,14 +361,44 @@ function EditPropertyModal({property,onSave,onClose}) {
 }
 
 /* ═══ PROPERTIES ═══ */
-function PropertiesTab({data,refresh,showToast,setModal}) {
+function PropertiesTab({data,refresh,showToast,setModal,navigate}) {
   const {properties,tenants}=data;const [form,setForm]=useState({name:"",address:"",type:"residential",units:""});
   const add=async()=>{if(!form.name)return showToast("Name required");const u=form.units?form.units.split(",").map(s=>s.trim()).filter(Boolean):[];await sb("properties",{method:"POST",body:JSON.stringify({name:form.name,address:form.address,type:form.type,units:u})});setForm({name:"",address:"",type:"residential",units:""});refresh();showToast("Property added!");};
   const del=async(id)=>{if(tenants.some(t=>t.property_id===id))return showToast("Remove tenants first");if(!confirm("Delete?"))return;await sb(`properties?id=eq.${id}`,{method:"DELETE"});refresh();showToast("Deleted");};
-  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Properties</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{properties.length} properties</p>
+  return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Properties</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{properties.length} {properties.length===1?"property":"properties"}</p>
     <Card title="Add New Property"><div style={{padding:18}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Property Name *" placeholder="e.g. 412 Maple Ave" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><Input label="Address" placeholder="Full address" value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/><Select label="Type" options={[{value:"residential",label:"Residential"},{value:"commercial",label:"Commercial"},{value:"mixed",label:"Mixed"}]} value={form.type} onChange={e=>setForm({...form,type:e.target.value})}/><Input label="Units (comma separated)" placeholder="1A, 1B, 2A" value={form.units} onChange={e=>setForm({...form,units:e.target.value})}/></div><div style={{marginTop:12}}><Btn onClick={add}>+ Add Property</Btn></div></div></Card>
-    {properties.map(p=>{const pts=tenants.filter(t=>t.property_id===p.id);return <Card key={p.id} title={<span>🏠 {p.name}</span>} action={<div style={{display:"flex",gap:6}}><Btn variant="outline" small onClick={()=>setModal(<EditPropertyModal property={p} onSave={()=>{refresh();showToast("Property updated!");}} onClose={()=>setModal(null)}/>)}>✏️ Edit</Btn><Btn variant="danger" small onClick={()=>del(p.id)}>Delete</Btn></div>}><div style={{padding:18}}><div style={{fontSize:13,color:"#64748B",marginBottom:8}}>{p.address||"No address"}</div>{p.units?.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>{p.units.map((u,i)=><span key={i} style={{background:"#F1F5F9",padding:"3px 10px",borderRadius:6,fontSize:11,fontWeight:600,color:"#475569"}}>{u}</span>)}</div>}<div style={{fontSize:12,fontWeight:600,color:"#059669"}}>{pts.length} tenant{pts.length!==1?"s":""}</div>{pts.map(t=><div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:13}}><span style={{width:24,height:24,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:10}}>{t.name[0]}</span>{t.name} · Unit {t.unit||"—"} · {fmtMoney(t.rent_amount)}/mo</div>)}</div></Card>;})}
+    {properties.map(p=>{const pts=tenants.filter(t=>t.property_id===p.id);return <Card key={p.id} title={<button onClick={()=>navigate("properties",{type:"property",id:p.id})} style={{background:"none",border:"none",fontWeight:700,fontSize:13,cursor:"pointer",color:"#059669",padding:0,fontFamily:"inherit"}}>🏠 {p.name}</button>} action={<div style={{display:"flex",gap:6}}><Btn variant="outline" small onClick={()=>setModal(<EditPropertyModal property={p} onSave={()=>{refresh();showToast("Property updated!");}} onClose={()=>setModal(null)}/>)}>✏️ Edit</Btn><Btn variant="danger" small onClick={()=>del(p.id)}>Delete</Btn></div>}><div style={{padding:18}}><div style={{fontSize:13,color:"#64748B",marginBottom:8}}>{p.address||"No address"}</div>{p.units?.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>{p.units.map((u,i)=><span key={i} style={{background:"#F1F5F9",padding:"3px 10px",borderRadius:6,fontSize:11,fontWeight:600,color:"#475569"}}>{u}</span>)}</div>}<div style={{fontSize:12,fontWeight:600,color:"#059669",marginBottom:6}}>{pts.length} tenant{pts.length!==1?"s":""}</div>{pts.map(t=><div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:13}}><span style={{width:24,height:24,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:10}}>{t.name[0]}</span>{t.name} · Unit {t.unit||"—"} · {fmtMoney(t.rent_amount)}/mo</div>)}</div></Card>;})}
     {properties.length===0&&<Empty msg="No properties yet. Add your first property above."/>}
+  </div>;
+}
+
+/* ═══ PROPERTY DETAIL VIEW ═══ */
+function PropertyDetailView({data,navigate,showToast,refresh,setModal,propertyId}) {
+  const {properties,tenants,payments}=data;
+  const property=properties.find(p=>p.id===propertyId);
+  const pts=tenants.filter(t=>t.property_id===propertyId);
+  const [sending,setSending]=useState({});
+  const sendOne=async(t)=>{setSending(s=>({...s,[t.id]:true}));await sendReminderSMS(t,showToast,refresh);setSending(s=>({...s,[t.id]:false}));};
+  const month=monthNow();
+  const propPayments=payments.filter(p=>pts.some(t=>t.id===p.tenant_id));
+  const collected=propPayments.filter(p=>p.month===month&&p.status==="verified").reduce((s,p)=>s+p.amount,0);
+  const expected=pts.reduce((s,t)=>s+t.rent_amount,0);
+  if(!property)return <Empty msg="Property not found."/>;
+  return <div className="fade">
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}><div><h1 style={{fontSize:24,fontWeight:800,letterSpacing:-0.5}}>🏠 {property.name}</h1><p style={{fontSize:13,color:"#94A3B8",marginTop:2}}>{property.address||"No address"} · {property.type||"residential"}</p></div><Btn variant="outline" onClick={()=>setModal(<EditPropertyModal property={property} onSave={()=>{refresh();showToast("Property updated!");}} onClose={()=>setModal(null)}/>)}>✏️ Edit</Btn></div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:24}}>
+      <div style={{background:"white",borderRadius:10,padding:16,borderTop:"3px solid #2563EB"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Tenants</div><div style={{fontSize:26,fontWeight:800,color:"#2563EB"}}>{pts.length}</div></div>
+      <div style={{background:"white",borderRadius:10,padding:16,borderTop:"3px solid #059669"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Collected</div><div style={{fontSize:26,fontWeight:800,color:"#059669"}}>{fmtMoney(collected)}</div><div style={{fontSize:11,color:"#94A3B8"}}>of {fmtMoney(expected)}</div></div>
+      <div style={{background:"white",borderRadius:10,padding:16,borderTop:"3px solid #D97706"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Units</div><div style={{fontSize:26,fontWeight:800,color:"#D97706"}}>{property.units?.length||0}</div></div>
+    </div>
+    <Card title={`Tenants (${pts.length})`}>
+      {pts.length===0&&<Empty msg="No tenants at this property."/>}
+      {pts.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:32,height:32,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13}}>{t.name[0]}</div><div><button onClick={()=>navigate("tenants",{type:"tenant",id:t.id})} style={{background:"none",border:"none",fontWeight:700,fontSize:14,cursor:"pointer",color:"#18181B",padding:0,fontFamily:"inherit",textAlign:"left"}}>{t.name}</button><div style={{fontSize:12,color:"#94A3B8"}}>Unit {t.unit||"—"} · {fmtPhone(t.phone)} · {t.payment_method}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontWeight:800,fontSize:14,color:"#059669"}}>{fmtMoney(t.rent_amount)}/mo</span><Btn small onClick={()=>sendOne(t)} disabled={!!sending[t.id]}>{sending[t.id]?"Sending...":"📱"}</Btn></div></div>)}
+    </Card>
+    <Card title="Recent Payments">
+      {propPayments.length===0&&<Empty msg="No payment records."/>}
+      {propPayments.slice(0,20).map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 18px",borderBottom:"1px solid #F1F5F9"}}><div><div style={{fontWeight:700,fontSize:13}}>{p.tenants?.name||"Tenant"}{p.tenants?.unit?` · Unit ${p.tenants.unit}`:""}</div><div style={{fontSize:11,color:"#94A3B8"}}>{monthLabel(p.month)}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontWeight:700,fontSize:13}}>{fmtMoney(p.amount)}</span><Badge color={STATUS_COLORS[p.status]||"#94A3B8"}>{STATUS_LABELS[p.status]||p.status}</Badge></div></div>)}
+    </Card>
   </div>;
 }
 
@@ -341,25 +410,63 @@ function EditTenantModal({tenant,properties,onSave,onClose}) {
   return <div><h2 style={{fontSize:18,fontWeight:800,marginBottom:16}}>Edit Tenant — {tenant.name}</h2><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Full Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><Input label="Phone *" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/><Input label="Email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/><Select label="Property" options={[{value:"",label:"Select property..."},...properties.map(p=>({value:p.id,label:p.name}))]} value={form.property_id} onChange={e=>setForm({...form,property_id:e.target.value})}/><Input label="Unit" placeholder="e.g. 2A" value={form.unit} onChange={e=>setForm({...form,unit:e.target.value})}/><Input label="Rent ($/mo) *" type="number" value={form.rent_amount} onChange={e=>setForm({...form,rent_amount:e.target.value})}/><Select label="Payment Method" options={PAY_METHODS} value={form.payment_method} onChange={e=>setForm({...form,payment_method:e.target.value})}/><Input label="Due Day" type="number" min="1" max="28" value={form.due_day} onChange={e=>setForm({...form,due_day:e.target.value})}/><Input label="Grace Period (days)" type="number" value={form.grace_days} onChange={e=>setForm({...form,grace_days:e.target.value})}/><Input label="Late Fee ($)" type="number" value={form.late_fee} onChange={e=>setForm({...form,late_fee:e.target.value})}/><Input label="Lease Start" type="date" value={form.lease_start} onChange={e=>setForm({...form,lease_start:e.target.value})}/><Input label="Lease End" type="date" value={form.lease_end} onChange={e=>setForm({...form,lease_end:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><Btn onClick={save} disabled={saving}>{saving?"Saving...":"💾 Save Changes"}</Btn><Btn variant="outline" onClick={onClose}>Cancel</Btn></div></div>;
 }
 
+/* ═══ TENANT DETAIL VIEW ═══ */
+function TenantDetailView({data,navigate,showToast,refresh,setModal,tenantId}) {
+  const {tenants,payments,properties}=data;
+  const tenant=tenants.find(t=>t.id===tenantId);
+  const [sending,setSending]=useState(false);
+  const tp=payments.filter(p=>p.tenant_id===tenantId).sort((a,b)=>b.month.localeCompare(a.month));
+  if(!tenant)return <Empty msg="Tenant not found."/>;
+  const sendOne=async()=>{setSending(true);await sendReminderSMS(tenant,showToast,refresh);setSending(false);};
+  const totalPaid=tp.filter(p=>p.status==="verified").reduce((s,p)=>s+p.amount,0);
+  const unpaidCount=tp.filter(p=>p.status!=="verified").length;
+  return <div className="fade">
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:48,height:48,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:20}}>{tenant.name[0]}</div><div><h1 style={{fontSize:22,fontWeight:800}}>{tenant.name}</h1><p style={{fontSize:13,color:"#94A3B8"}}>{tenant.properties?.name||"—"}{tenant.unit?` · Unit ${tenant.unit}`:""}</p></div></div><div style={{display:"flex",gap:8}}><Btn onClick={sendOne} disabled={sending}>{sending?"Sending...":"📱 Send Reminder"}</Btn><Btn variant="outline" onClick={()=>setModal(<EditTenantModal tenant={tenant} properties={properties} onSave={()=>{refresh();showToast("Tenant updated!");}} onClose={()=>setModal(null)}/>)}>✏️ Edit</Btn></div></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:24}}>
+      <Card title="Tenant Info"><div style={{padding:16,fontSize:13,display:"flex",flexDirection:"column",gap:8}}>
+        {[["Phone",fmtPhone(tenant.phone)],["Email",tenant.email||"—"],["Rent",fmtMoney(tenant.rent_amount)+"/mo"],["Due Day",(tenant.due_day||1)+"st of month"],["Payment Method",(tenant.payment_method||"—")],["Grace Period",(tenant.grace_days||5)+" days"],["Late Fee",fmtMoney(tenant.late_fee||0)],["Lease",(tenant.lease_start||"—")+" → "+(tenant.lease_end||"—")]].map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#64748B"}}>{k}</span><span style={{fontWeight:600}}>{v}</span></div>)}
+      </div></Card>
+      <div>
+        <div style={{background:"white",borderRadius:10,padding:16,borderTop:"3px solid #059669",marginBottom:12}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Total Paid</div><div style={{fontSize:24,fontWeight:800,color:"#059669"}}>{fmtMoney(totalPaid)}</div></div>
+        <div style={{background:"white",borderRadius:10,padding:16,borderTop:"3px solid #DC2626"}}><div style={{fontSize:11,fontWeight:600,color:"#64748B",textTransform:"uppercase"}}>Unpaid Months</div><div style={{fontSize:24,fontWeight:800,color:"#DC2626"}}>{unpaidCount}</div></div>
+      </div>
+    </div>
+    <Card title="Payment History">
+      {tp.length===0&&<Empty msg="No payment records."/>}
+      {tp.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 18px",borderBottom:"1px solid #F1F5F9"}}><div><div style={{fontWeight:700,fontSize:13}}>{monthLabel(p.month)}</div><div style={{fontSize:11,color:"#94A3B8"}}>{p.is_late?`${p.days_late||0}d late`:"On time"}{p.late_fee_applied>0?` · +${fmtMoney(p.late_fee_applied)} fee`:""}</div></div><div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontWeight:700,fontSize:14}}>{fmtMoney(p.amount)}</span><Badge color={STATUS_COLORS[p.status]||"#94A3B8"}>{STATUS_LABELS[p.status]||p.status}</Badge>{p.approved_at&&<span style={{fontSize:11,color:"#94A3B8"}}>{new Date(p.approved_at).toLocaleDateString()}</span>}</div></div>)}
+    </Card>
+  </div>;
+}
+
 /* ═══ TENANTS ═══ */
-function TenantsTab({data,refresh,showToast,setModal}) {
-  const {properties,tenants}=data;const [form,setForm]=useState({name:"",phone:"",email:"",unit:"",rent_amount:"",payment_method:"zelle",due_day:"1",grace_days:"5",late_fee:"50",property_id:"",lease_start:"",lease_end:""});
+function TenantsTab({data,refresh,showToast,setModal,navigate}) {
+  const {properties,tenants}=data;
+  const [form,setForm]=useState({name:"",phone:"",email:"",unit:"",rent_amount:"",payment_method:"zelle",due_day:"1",grace_days:"5",late_fee:"50",property_id:"",lease_start:"",lease_end:""});
+  const [sort,setSort]=useState("name");
+  const [sending,setSending]=useState({});
   const add=async()=>{if(!form.name||!form.phone||!form.rent_amount)return showToast("Name, phone, rent required");if(!form.property_id)return showToast("Select a property");await sb("tenants",{method:"POST",body:JSON.stringify({name:form.name,phone:normPhone(form.phone),email:form.email||null,unit:form.unit||null,rent_amount:Math.round(parseFloat(form.rent_amount)*100),payment_method:form.payment_method,due_day:parseInt(form.due_day)||1,grace_days:parseInt(form.grace_days)||5,late_fee:Math.round(parseFloat(form.late_fee||0)*100),property_id:form.property_id,lease_start:form.lease_start||null,lease_end:form.lease_end||null})});setForm({name:"",phone:"",email:"",unit:"",rent_amount:"",payment_method:"zelle",due_day:"1",grace_days:"5",late_fee:"50",property_id:"",lease_start:"",lease_end:""});refresh();showToast("Tenant added!");};
   const remove=async(id)=>{if(!confirm("Remove tenant?"))return;await sb(`tenants?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({active:false})});refresh();showToast("Removed");};
-  const sendReminder=async(tenant)=>{const month=monthNow();const ex=await sb(`payments?tenant_id=eq.${tenant.id}&month=eq.${month}`);let pid;if(!ex||!ex.length){const c=await sb("payments",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,month,amount:tenant.rent_amount,status:"pending",due_date:`${month}-${String(tenant.due_day||1).padStart(2,"0")}`})});pid=c[0]?.id;}else{pid=ex[0].id;}const link=`${window.location.origin}/pay.html?id=${pid}`;const msg=`Hi ${tenant.name.split(" ")[0]}, your rent of ${fmtMoney(tenant.rent_amount)}${tenant.unit?` for Unit ${tenant.unit}`:""} is due. Pay via ${tenant.payment_method} and upload proof here: ${link} Reply STOP to opt out.`;try{const r=await fetch("/api/send-sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({to:tenant.phone,message:msg})});if(r.ok){await sb("reminders",{method:"POST",body:JSON.stringify({tenant_id:tenant.id,type:"due_reminder",message:msg,month})});showToast(`Reminder sent to ${tenant.name}!`);}else showToast("SMS failed — check Twilio");}catch(e){showToast("SMS error");}refresh();};
-  const sendAll=async()=>{if(!confirm(`Send to all ${tenants.length} tenants?`))return;for(const t of tenants)await sendReminder(t);};
-  const grouped={};tenants.forEach(t=>{const k=t.properties?.name||"Unassigned";if(!grouped[k])grouped[k]=[];grouped[k].push(t);});
+  const sendOne=async(t)=>{setSending(s=>({...s,[t.id]:true}));await sendReminderSMS(t,showToast,refresh);setSending(s=>({...s,[t.id]:false}));};
+  const sendAll=async()=>{if(!confirm(`Send to all ${tenants.length} tenants?`))return;for(const t of tenants)await sendOne(t);};
+  const sorted=[...tenants].sort((a,b)=>{if(sort==="property")return(a.properties?.name||"").localeCompare(b.properties?.name||"");if(sort==="rent")return b.rent_amount-a.rent_amount;return a.name.localeCompare(b.name);});
+  const grouped={};sorted.forEach(t=>{const k=t.properties?.name||"Unassigned";if(!grouped[k])grouped[k]=[];grouped[k].push(t);});
   return <div className="fade">
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}><div><h1 style={{fontSize:22,fontWeight:800}}>Tenants</h1><p style={{fontSize:13,color:"#94A3B8"}}>{tenants.length} active</p></div>{tenants.length>0&&<Btn onClick={sendAll}>📱 Send All Reminders</Btn>}</div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+      <div><h1 style={{fontSize:22,fontWeight:800}}>Tenants</h1><p style={{fontSize:13,color:"#94A3B8"}}>{tenants.length} active</p></div>
+      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <select value={sort} onChange={e=>setSort(e.target.value)} style={{padding:"6px 10px",border:"1.5px solid #E2E8F0",borderRadius:8,fontSize:11,fontFamily:"inherit",background:"white",color:"#64748B",fontWeight:600}}><option value="name">Sort: Name</option><option value="property">Sort: Property</option><option value="rent">Sort: Rent</option></select>
+        {tenants.length>0&&<Btn onClick={sendAll}>📱 Send All Reminders</Btn>}
+      </div>
+    </div>
     <Card title="Add New Tenant"><div style={{padding:18}}>{properties.length===0?<div style={{color:"#DC2626",fontSize:13,fontWeight:600}}>⚠️ Add a property first.</div>:<><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Input label="Full Name *" placeholder="John Smith" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><Input label="Phone *" placeholder="(908) 555-1234" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/><Input label="Email" placeholder="tenant@email.com" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/><Select label="Property *" options={[{value:"",label:"Select property..."},...properties.map(p=>({value:p.id,label:p.name}))]} value={form.property_id} onChange={e=>setForm({...form,property_id:e.target.value})}/><Input label="Unit" placeholder="e.g. 2A" value={form.unit} onChange={e=>setForm({...form,unit:e.target.value})}/><Input label="Rent ($/mo) *" type="number" placeholder="1500" value={form.rent_amount} onChange={e=>setForm({...form,rent_amount:e.target.value})}/><Select label="Payment Method" options={PAY_METHODS} value={form.payment_method} onChange={e=>setForm({...form,payment_method:e.target.value})}/><Input label="Due Day" type="number" min="1" max="28" value={form.due_day} onChange={e=>setForm({...form,due_day:e.target.value})}/><Input label="Grace Period (days)" type="number" value={form.grace_days} onChange={e=>setForm({...form,grace_days:e.target.value})}/><Input label="Late Fee ($)" type="number" placeholder="50" value={form.late_fee} onChange={e=>setForm({...form,late_fee:e.target.value})}/><Input label="Lease Start" type="date" value={form.lease_start} onChange={e=>setForm({...form,lease_start:e.target.value})}/><Input label="Lease End" type="date" value={form.lease_end} onChange={e=>setForm({...form,lease_end:e.target.value})}/></div><div style={{marginTop:12}}><Btn onClick={add}>+ Add Tenant</Btn></div></>}</div></Card>
-    {Object.entries(grouped).map(([n,pts])=><Card key={n} title={`🏠 ${n} (${pts.length})`}>{pts.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:32,height:32,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13}}>{t.name[0]}</div><div><div style={{fontWeight:700,fontSize:14}}>{t.name}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {t.unit||"—"} · {fmtPhone(t.phone)} · {t.payment_method} · Due {t.due_day||1}st · Grace {t.grace_days||5}d · Late fee {fmtMoney(t.late_fee||0)}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15,color:"#059669"}}>{fmtMoney(t.rent_amount)}</div><Btn variant="outline" small onClick={()=>sendReminder(t)}>📱</Btn><Btn variant="outline" small onClick={()=>setModal(<EditTenantModal tenant={t} properties={properties} onSave={()=>{refresh();showToast("Tenant updated!");}} onClose={()=>setModal(null)}/>)}>✏️</Btn><Btn variant="danger" small onClick={()=>remove(t.id)}>✕</Btn></div></div>)}</Card>)}
+    {Object.entries(grouped).map(([n,pts])=><Card key={n} title={`🏠 ${n} (${pts.length})`}>{pts.map(t=><div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 18px",borderBottom:"1px solid #F1F5F9"}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:32,height:32,borderRadius:"50%",background:"#059669",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13}}>{t.name[0]}</div><div><button onClick={()=>navigate("tenants",{type:"tenant",id:t.id})} style={{background:"none",border:"none",fontWeight:700,fontSize:14,cursor:"pointer",color:"#18181B",padding:0,fontFamily:"inherit",textDecoration:"underline",textDecorationColor:"#E5E7EB"}}>{t.name}</button><div style={{fontSize:12,color:"#64748B"}}>Unit {t.unit||"—"} · {fmtPhone(t.phone)} · {t.payment_method} · Due {t.due_day||1}st · {fmtMoney(t.rent_amount)}/mo</div></div></div><div style={{display:"flex",alignItems:"center",gap:6}}><Btn variant="outline" small onClick={()=>sendOne(t)} disabled={!!sending[t.id]}>{sending[t.id]?"...":"📱"}</Btn><Btn variant="outline" small onClick={()=>setModal(<EditTenantModal tenant={t} properties={properties} onSave={()=>{refresh();showToast("Tenant updated!");}} onClose={()=>setModal(null)}/>)}>✏️</Btn><Btn variant="danger" small onClick={()=>remove(t.id)}>✕</Btn></div></div>)}</Card>)}
     {tenants.length===0&&<Empty msg="No tenants yet. Add a property first."/>}
   </div>;
 }
 
 /* ═══ PAYMENTS (with late fee auto-calc) ═══ */
 function PaymentsTab({data,refresh,showToast,setModal}) {
-  const {payments,settings}=data;const [filter,setFilter]=useState("all");const [approving,setApproving]=useState(null);
+  const {payments,settings}=data;const [filter,setFilter]=useState("all");const [sortP,setSortP]=useState("date");const [approving,setApproving]=useState(null);
   const filtered=payments.filter(p=>{if(filter==="review")return p.status==="proof_uploaded";if(filter==="verified")return p.status==="verified";if(filter==="overdue")return p.status==="pending"||p.status==="overdue";return true;});
   const approve=async(p)=>{
     setApproving(p.id);
@@ -379,9 +486,13 @@ function PaymentsTab({data,refresh,showToast,setModal}) {
     setApproving(null);refresh();showToast(`Approved! PDF receipt sent to ${p.tenants?.name}`);
   };
   const viewProof=(p)=>setModal(<div><h2 style={{fontSize:18,fontWeight:800,marginBottom:4}}>Proof of Payment</h2><p style={{fontSize:13,color:"#64748B",marginBottom:12}}>{p.tenants?.name} · Unit {p.tenants?.unit} · {p.tenants?.properties?.name} · {monthLabel(p.month)} · {fmtMoney(p.amount)}</p>{p.proof_url?<img src={p.proof_url} alt="Proof" style={{maxWidth:"100%",borderRadius:8,marginBottom:16}}/>:<p style={{color:"#DC2626",padding:20}}>No proof uploaded yet.</p>}{p.proof_uploaded_at&&<p style={{fontSize:11,color:"#94A3B8",marginBottom:12}}>Uploaded: {new Date(p.proof_uploaded_at).toLocaleString()}</p>}{p.status==="proof_uploaded"&&<Btn onClick={()=>{approve(p);setModal(null);}} disabled={approving===p.id}>{approving===p.id?"Generating PDF...":"✅ Approve & Send Receipt PDF"}</Btn>}</div>);
-  const rows=filtered.map(p=>{if(p.status==="verified")return p;const dl=calcDaysLate(p.due_date);return{...p,_daysLate:dl,_lateFee:calcLateFee(dl,p.tenants?.grace_days,p.tenants?.late_fee)};});
+  const withCalc=filtered.map(p=>{if(p.status==="verified")return p;const dl=calcDaysLate(p.due_date);return{...p,_daysLate:dl,_lateFee:calcLateFee(dl,p.tenants?.grace_days,p.tenants?.late_fee)};});
+  const rows=[...withCalc].sort((a,b)=>{if(sortP==="amount")return b.amount-a.amount;if(sortP==="status"){const so={overdue:0,proof_uploaded:1,pending:2,verified:3};return(so[a.status]??4)-(so[b.status]??4);}if(sortP==="name")return(a.tenants?.name||"").localeCompare(b.tenants?.name||"");return new Date(b.created_at)-new Date(a.created_at);});
   return <div className="fade"><h1 style={{fontSize:22,fontWeight:800}}>Payments</h1><p style={{fontSize:13,color:"#94A3B8",marginBottom:16}}>{payments.length} records</p>
-    <div className="no-print" style={{display:"flex",gap:6,marginBottom:16}}>{[["all","All"],["review",`Review (${payments.filter(p=>p.status==="proof_uploaded").length})`],["verified","Verified"],["overdue","Overdue"]].map(([f,l])=><button key={f} onClick={()=>setFilter(f)} style={{background:filter===f?"#059669":"#F1F5F9",color:filter===f?"white":"#64748B",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{l}</button>)}</div>
+    <div className="no-print" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+      <div style={{display:"flex",gap:6}}>{[["all","All"],["review",`Review (${payments.filter(p=>p.status==="proof_uploaded").length})`],["verified","Verified"],["overdue","Overdue"]].map(([f,l])=><button key={f} onClick={()=>setFilter(f)} style={{background:filter===f?"#059669":"#F1F5F9",color:filter===f?"white":"#64748B",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{l}</button>)}</div>
+      <select value={sortP} onChange={e=>setSortP(e.target.value)} style={{padding:"6px 10px",border:"1.5px solid #E2E8F0",borderRadius:8,fontSize:11,fontFamily:"inherit",background:"white",color:"#64748B",fontWeight:600}}><option value="date">Sort: Date</option><option value="amount">Sort: Amount</option><option value="status">Sort: Status</option><option value="name">Sort: Name</option></select>
+    </div>
     {rows.map(p=><div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"white",padding:"12px 16px",borderRadius:10,marginBottom:6,border:"1px solid #E5E7EB",borderLeft:`4px solid ${STATUS_COLORS[p.status]||"#94A3B8"}`}}><div><div style={{fontWeight:700,fontSize:14}}>{p.tenants?.name||"Tenant"}</div><div style={{fontSize:12,color:"#64748B"}}>Unit {p.tenants?.unit||"—"} · {p.tenants?.properties?.name||""} · {monthLabel(p.month)}{p._daysLate>0&&<span style={{color:"#DC2626",fontWeight:700}}> · {p._daysLate}d late</span>}{p._lateFee>0&&<span style={{color:"#DC2626",fontWeight:700}}> · +{fmtMoney(p._lateFee)} fee</span>}</div></div><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:800,fontSize:15}}>{fmtMoney(p.amount)}</div><Badge color={STATUS_COLORS[p.status]}>{STATUS_LABELS[p.status]}</Badge>{p.proof_url&&<Btn variant="outline" small onClick={()=>viewProof(p)}>View Proof</Btn>}{p.status==="proof_uploaded"&&<Btn small onClick={()=>approve(p)} disabled={approving===p.id}>{approving===p.id?"Generating...":"Approve"}</Btn>}</div></div>)}
     {rows.length===0&&<Empty msg="No payments match this filter."/>}
   </div>;
@@ -440,7 +551,9 @@ function RentRollTab({data,refresh,showToast,setModal}) {
   const {tenants,payments,settings}=data;const [month,setMonth]=useState(monthNow());
   const allMonths=[];const now=new Date();for(let i=11;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);allMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);}
   const mp=payments.filter(p=>p.month===month);
-  const rows=tenants.map(t=>{const pay=mp.find(p=>p.tenant_id===t.id);const dd=`${month}-${String(t.due_day||1).padStart(2,"0")}`;const dl=pay?(pay.status==="verified"?0:calcDaysLate(dd)):calcDaysLate(dd);const lf=calcLateFee(dl,t.grace_days,t.late_fee);const status=pay?pay.status:"no_record";return{tenant:t,pay,dl,lf,status,propName:t.properties?.name||"—"};});
+  const rawRows=tenants.map(t=>{const pay=mp.find(p=>p.tenant_id===t.id);const dd=`${month}-${String(t.due_day||1).padStart(2,"0")}`;const dl=pay?(pay.status==="verified"?0:calcDaysLate(dd)):calcDaysLate(dd);const lf=calcLateFee(dl,t.grace_days,t.late_fee);const status=pay?pay.status:"no_record";return{tenant:t,pay,dl,lf,status,propName:t.properties?.name||"—"};});
+  const statusOrder={overdue:0,no_record:1,pending:2,proof_uploaded:3,verified:4};
+  const rows=[...rawRows].sort((a,b)=>(statusOrder[a.status]??5)-(statusOrder[b.status]??5)||(a.propName.localeCompare(b.propName)));
   const totalExp=tenants.reduce((s,t)=>s+t.rent_amount,0);const totalCol=rows.filter(r=>r.status==="verified").reduce((s,r)=>s+(r.pay?.amount||0),0);const totalLF=rows.reduce((s,r)=>s+r.lf,0);
 
   const exportCSV=()=>{downloadCSV(`rentproof_rent_roll_${month}.csv`,["Tenant","Property","Unit","Rent Due","Status","Days Late","Late Fee","Amount Paid","Method","Date Verified"],rows.map(r=>[r.tenant.name,r.propName,r.tenant.unit||"",(r.tenant.rent_amount/100).toFixed(2),r.status==="verified"?"Verified":r.status==="proof_uploaded"?"Proof Uploaded":r.status==="pending"?"Pending":"Not Paid",r.dl,(r.lf/100).toFixed(2),r.pay?(r.pay.amount/100).toFixed(2):"0.00",r.tenant.payment_method,r.pay?.approved_at?new Date(r.pay.approved_at).toLocaleDateString():""]));showToast("CSV downloaded!");};
