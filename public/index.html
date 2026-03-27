@@ -245,23 +245,35 @@ async function generateDemandLetterPDF({landlordName,landlordPhone,landlordEmail
 }
 
 /* ═══ ENSURE MONTHLY PAYMENTS ═══ */
+// MVP NOTE: Runs client-side on every refresh to backfill missing payment rows.
+// Before scaling, move this to a dedicated server-side ledger sync job
+// (e.g. a nightly Vercel Cron) so it doesn't execute per-user per-load.
 async function ensureMonthlyPayments(tenants, payments) {
   const month = monthNow();
+  // Defensive filter: only active tenants, even if caller already filters
+  const activeTenants = tenants.filter(t => t.active !== false);
+  // Check tenant_id + month together — never touches existing records,
+  // so old payment amounts are preserved even if rent_amount has since changed
   const existingIds = new Set(payments.filter(p => p.month === month).map(p => p.tenant_id));
-  const missing = tenants.filter(t => !existingIds.has(t.id));
+  const missing = activeTenants.filter(t => !existingIds.has(t.id));
   if (!missing.length) return 0;
-  await Promise.all(missing.map(t =>
-    sb("payments", {
+  await Promise.all(missing.map(async t => {
+    const res = await fetch(`${SB_URL}/rest/v1/payments`, {
       method: "POST",
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         tenant_id: t.id,
         month,
-        amount: t.rent_amount,
+        amount: t.rent_amount,  // set once on INSERT — existing records are never touched
         status: "pending",
         due_date: `${month}-${String(t.due_day || 1).padStart(2, "0")}`,
       }),
-    }).catch(() => {})
-  ));
+    });
+    if (res.ok) return;
+    const err = await res.json().catch(() => ({}));
+    if (err.code === "23505") return; // duplicate key (race condition) — safe to ignore
+    throw new Error(`Payment insert failed for tenant ${t.id}: ${err.message || res.status}`);
+  }));
   return missing.length;
 }
 

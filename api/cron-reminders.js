@@ -18,24 +18,32 @@ export default async function handler(req, res) {
     let recordsCreated = 0;
 
     // ── Ensure every active tenant has a payment record for this month ──
+    // MVP NOTE: Before scaling, promote this to a dedicated ledger sync job
+    // so it isn't coupled to the reminder cron schedule.
     const existingRes = await fetch(`${SB_URL}/rest/v1/payments?month=eq.${month}&select=tenant_id`, {
       headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
     });
     const existing = await existingRes.json();
+    // Check tenant_id + month together — never touches existing records,
+    // so old payment amounts are preserved even if rent_amount has since changed
     const existingIds = new Set(Array.isArray(existing) ? existing.map(p => p.tenant_id) : []);
-    const missingTenants = Array.isArray(tenants) ? tenants.filter(t => !existingIds.has(t.id)) : [];
+    // Defensive filter: only active tenants (tenants query already filters, but be explicit)
+    const activeTenants = Array.isArray(tenants) ? tenants.filter(t => t.active !== false) : [];
+    const missingTenants = activeTenants.filter(t => !existingIds.has(t.id));
     await Promise.all(missingTenants.map(async t => {
-      try {
-        await fetch(`${SB_URL}/rest/v1/payments`, {
-          method: "POST",
-          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tenant_id: t.id, month, amount: t.rent_amount, status: "pending",
-            due_date: `${month}-${String(t.due_day || 1).padStart(2, "0")}`,
-          }),
-        });
-        recordsCreated++;
-      } catch(e) {}
+      const insertRes = await fetch(`${SB_URL}/rest/v1/payments`, {
+        method: "POST",
+        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenant_id: t.id, month, amount: t.rent_amount, status: "pending",
+          due_date: `${month}-${String(t.due_day || 1).padStart(2, "0")}`,
+          // amount set once on INSERT — existing records are never touched
+        }),
+      });
+      if (insertRes.ok) { recordsCreated++; return; }
+      const err = await insertRes.json().catch(() => ({}));
+      if (err.code === "23505") return; // duplicate key (race condition) — safe to ignore
+      throw new Error(`Payment insert failed for tenant ${t.id}: ${err.message || insertRes.status}`);
     }));
 
     // ── Apply late fees & overdue status to all non-verified payments ──
