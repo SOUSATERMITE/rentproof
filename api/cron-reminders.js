@@ -1,6 +1,10 @@
 export default async function handler(req, res) {
-  const SB_URL = "https://uooddulmilbzjngrikvf.supabase.co";
-  const SB_KEY = "sb_publishable_5WF16MLC83FxqgnOJKzlPA_Fc0Jf_sC";
+  const SB_URL = process.env.SUPABASE_URL;
+  const SB_KEY = process.env.SUPABASE_KEY;
+
+  if (!SB_URL || !SB_KEY) {
+    return res.status(500).json({ error: "Supabase credentials not configured" });
+  }
   const month = new Date().toISOString().slice(0, 7);
 
   try {

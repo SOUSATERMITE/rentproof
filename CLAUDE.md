@@ -17,8 +17,8 @@ The core workflow: landlord sends tenant a text reminder → tenant clicks link 
 |-------|---------|---------|
 | Frontend | Vanilla HTML + React (CDN) | Single-page app via Babel in-browser transform. No build step. |
 | Hosting | Vercel | Auto-deploys from GitHub. Serverless functions in `/api/`. |
-| Database | Supabase | Project URL: `https://uooddulmilbzjngrikvf.supabase.co` |
-| Database Key | Supabase anon key | `sb_publishable_5WF16MLC83FxqgnOJKzlPA_Fc0Jf_sC` |
+| Database | Supabase | Project URL in Vercel env var `SUPABASE_URL` |
+| Database Key | Supabase anon key | In Vercel env var `SUPABASE_KEY`. Also hardcoded in `index.html` / `pay.html` (publishable key, safe for browser). |
 | File Storage | Supabase Storage | Bucket: `rentproof-files` (public). Folders: `/proofs`, `/receipts`, `/vault` |
 | SMS | Twilio | Credentials in Vercel env vars: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` |
 | SMS Number | Twilio toll-free | `+18884116139` — **PENDING carrier verification** (Error 30032). SMS sends via API but carriers block delivery until Twilio approves toll-free verification. |
