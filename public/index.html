@@ -128,6 +128,99 @@ async function generateReceiptPDF({receiptNumber,tenantName,unit,propertyAddress
   return doc.output("blob");
 }
 
+/* ═══ PDF DEMAND LETTER GENERATOR ═══ */
+async function generateDemandLetterPDF({landlordName,landlordPhone,landlordEmail,tenantName,tenantUnit,propertyAddress,propertyName,unpaidRows,totalOwed,demandDays,generatedDate}) {
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:"mm",format:"a4"});
+  const D=[24,24,27],GR=[100,116,139],R=[220,38,38],W=[255,255,255];
+  const fmtDate=(s)=>new Date(s).toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+  const deadline=new Date(generatedDate);deadline.setDate(deadline.getDate()+demandDays);
+  const m=20;let y=m;
+
+  // Landlord info top-right
+  doc.setTextColor(...D);doc.setFont("helvetica","bold");doc.setFontSize(10);
+  doc.text(landlordName||"Landlord",210-m,y,{align:"right"});
+  doc.setFont("helvetica","normal");doc.setFontSize(8.5);doc.setTextColor(...GR);
+  if(landlordPhone)doc.text(landlordPhone,210-m,y+5.5,{align:"right"});
+  if(landlordEmail)doc.text(landlordEmail,210-m,y+(landlordPhone?11:5.5),{align:"right"});
+  // Date top-left
+  doc.setTextColor(...D);doc.setFontSize(10);
+  doc.text(fmtDate(generatedDate),m,y);
+  y+=26;
+
+  // Title bar
+  doc.setFillColor(...R);doc.rect(m,y,170,12,"F");
+  doc.setTextColor(...W);doc.setFontSize(13);doc.setFont("helvetica","bold");
+  doc.text("NOTICE TO PAY RENT OR QUIT",105,y+8.5,{align:"center"});
+  y+=20;
+
+  // RE / TO block
+  doc.setTextColor(...D);doc.setFontSize(9);doc.setFont("helvetica","bold");
+  doc.text("RE:",m,y);doc.setFont("helvetica","normal");
+  doc.text(`Unpaid Rent — ${tenantName} — Unit ${tenantUnit||"—"} — ${propertyAddress||propertyName||"—"}`,m+8,y);
+  y+=7;
+  doc.setFont("helvetica","bold");doc.text("TO:",m,y);doc.setFont("helvetica","normal");
+  doc.text(tenantName||"Tenant",m+8,y);
+  doc.text(`Unit ${tenantUnit||"—"}, ${propertyAddress||propertyName||"—"}`,m+8,y+5);
+  y+=16;
+
+  // Opening paragraph
+  doc.setFontSize(10);doc.setFont("helvetica","normal");doc.setTextColor(...D);
+  doc.text(`Dear ${tenantName||"Tenant"},`,m,y);y+=7;
+  const intro=`This letter serves as formal written notice that you are in default of your lease agreement for the above-referenced rental unit. As of ${fmtDate(generatedDate)}, the following rent and fees remain unpaid:`;
+  const introLines=doc.splitTextToSize(intro,170);doc.text(introLines,m,y);y+=introLines.length*5.5+5;
+
+  // Unpaid table header
+  doc.setFillColor(248,250,252);doc.rect(m,y-1,170,8,"F");
+  doc.setFontSize(8);doc.setFont("helvetica","bold");doc.setTextColor(...GR);
+  doc.text("PERIOD",m+2,y+5);doc.text("RENT DUE",m+52,y+5);doc.text("DAYS LATE",m+88,y+5);doc.text("LATE FEE",m+118,y+5);doc.text("ROW TOTAL",m+168,y+5,{align:"right"});
+  y+=10;
+
+  unpaidRows.forEach((row,i)=>{
+    if(i%2===0){doc.setFillColor(252,252,253);doc.rect(m,y-1,170,7,"F");}
+    doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(...D);
+    doc.text(monthLabel(row.month),m+2,y+4.5);
+    doc.text(fmtMoney(row.amount),m+52,y+4.5);
+    doc.text(row.daysLate>0?row.daysLate+"d":"—",m+88,y+4.5);
+    doc.setTextColor(row.lateFee>0?R[0]:GR[0],row.lateFee>0?R[1]:GR[1],row.lateFee>0?R[2]:GR[2]);
+    doc.text(row.lateFee>0?fmtMoney(row.lateFee):"—",m+118,y+4.5);
+    doc.setTextColor(...D);doc.setFont("helvetica","bold");
+    doc.text(fmtMoney(row.amount+row.lateFee),m+170,y+4.5,{align:"right"});
+    y+=7;
+  });
+
+  // Total bar
+  doc.setFillColor(...R);doc.rect(m,y,170,10,"F");
+  doc.setTextColor(...W);doc.setFontSize(10);doc.setFont("helvetica","bold");
+  doc.text("TOTAL AMOUNT DUE",m+4,y+7);
+  doc.text(fmtMoney(totalOwed),m+170,y+7,{align:"right"});
+  y+=18;
+
+  // Demand paragraphs
+  doc.setFontSize(10);doc.setFont("helvetica","normal");doc.setTextColor(...D);
+  const d1=`You are hereby demanded to pay the total outstanding balance of ${fmtMoney(totalOwed)} within ${demandDays} days of the date of this letter (on or before ${fmtDate(deadline.toISOString())}). Payment must be made in full.`;
+  const d1l=doc.splitTextToSize(d1,170);doc.text(d1l,m,y);y+=d1l.length*5.5+5;
+  const d2=`If payment in full is not received by the above deadline, we reserve the right to pursue all available legal remedies, including but not limited to filing for eviction proceedings and seeking a court judgment for all amounts owed, court costs, and attorney fees.`;
+  const d2l=doc.splitTextToSize(d2,170);doc.text(d2l,m,y);y+=d2l.length*5.5+5;
+  const d3=`If you believe this notice was sent in error or wish to discuss a payment arrangement, please contact us immediately at ${landlordPhone||landlordEmail||"the contact information listed above"}.`;
+  const d3l=doc.splitTextToSize(d3,170);doc.text(d3l,m,y);y+=d3l.length*5.5+10;
+
+  // Signature block
+  doc.text("Sincerely,",m,y);y+=12;
+  doc.setDrawColor(...D);doc.setLineWidth(0.3);doc.line(m,y,m+70,y);y+=5;
+  doc.setFont("helvetica","bold");doc.setFontSize(10);doc.text(landlordName||"Landlord",m,y);y+=5;
+  doc.setFont("helvetica","normal");doc.setFontSize(8.5);doc.setTextColor(...GR);
+  doc.text("Landlord / Property Owner",m,y);y+=5;
+  doc.text(fmtDate(generatedDate),m,y);
+
+  // Footer
+  doc.setDrawColor(...GR);doc.setLineWidth(0.2);doc.line(m,281,210-m,281);
+  doc.setFontSize(7.5);doc.setTextColor(...GR);
+  doc.text("Generated by RentProof · This document is for informational purposes only. Consult a licensed attorney for legal advice.",105,286,{align:"center"});
+
+  return doc.output("blob");
+}
+
 function App() {
   const [tab, setTab] = useState("dash");
   const [data, setData] = useState({properties:[],tenants:[],payments:[],documents:[],settings:{}});
@@ -269,6 +362,54 @@ function PaymentsTab({data,refresh,showToast,setModal}) {
   </div>;
 }
 
+/* ═══ COURT DOC MODAL (payment history + demand letter) ═══ */
+function CourtDocModal({tenant,payments,settings,showToast}) {
+  const [generating,setGenerating]=useState(false);
+  const [demandUrl,setDemandUrl]=useState(null);
+  const tp=payments.filter(p=>p.tenant_id===tenant.id).sort((a,b)=>a.month.localeCompare(b.month));
+  const genDemand=async()=>{
+    setGenerating(true);
+    try {
+      const unpaidRows=tp.filter(p=>p.status!=="verified").map(p=>{const dl=calcDaysLate(p.due_date);const lf=calcLateFee(dl,tenant.grace_days,tenant.late_fee);return{month:p.month,amount:p.amount,daysLate:dl,lateFee:lf};});
+      if(!unpaidRows.length){showToast("No unpaid payments found");setGenerating(false);return;}
+      const totalOwed=unpaidRows.reduce((s,r)=>s+r.amount+r.lateFee,0);
+      const now=new Date().toISOString();
+      const blob=await generateDemandLetterPDF({landlordName:settings.landlord_name,landlordPhone:settings.landlord_phone,landlordEmail:settings.landlord_email,tenantName:tenant.name,tenantUnit:tenant.unit,propertyAddress:tenant.properties?.address,propertyName:tenant.properties?.name,unpaidRows,totalOwed,demandDays:30,generatedDate:now});
+      const safeName=tenant.name.replace(/[^a-zA-Z0-9]/g,"_");
+      const path=`vault/demand_${safeName}_${Date.now()}.pdf`;
+      const up=await fetch(`${SB_URL}/storage/v1/object/rentproof-files/${path}`,{method:"POST",headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,"Content-Type":"application/pdf"},body:blob});
+      if(!up.ok)throw new Error("Upload failed");
+      const url=`${SB_URL}/storage/v1/object/public/rentproof-files/${path}`;
+      await sb("documents",{method:"POST",body:JSON.stringify({name:`Demand Letter — ${tenant.name} — ${new Date().toLocaleDateString()}`,type:"other",file_url:url,file_size:Math.round(blob.size/1024)+" KB",tenant_id:tenant.id,property_id:tenant.property_id||null,uploaded_by:"landlord"})});
+      setDemandUrl(url);showToast("Demand letter saved to Vault!");
+    } catch(e){console.error(e);showToast("Failed to generate demand letter");}
+    setGenerating(false);
+  };
+  return <div>
+    <div style={{textAlign:"center",marginBottom:20}}><div style={{fontSize:20,fontWeight:800}}>PAYMENT HISTORY — COURT RECORD</div><div style={{fontSize:12,color:"#64748B",marginTop:4}}>{settings.business_name||"RentProof"} · Generated {new Date().toLocaleDateString()}</div></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16,fontSize:13}}>
+      <div><strong>Tenant:</strong> {tenant.name}</div><div><strong>Phone:</strong> {fmtPhone(tenant.phone)}</div>
+      <div><strong>Property:</strong> {tenant.properties?.name||"—"}</div><div><strong>Unit:</strong> {tenant.unit||"—"}</div>
+      <div><strong>Address:</strong> {tenant.properties?.address||"—"}</div><div><strong>Rent:</strong> {fmtMoney(tenant.rent_amount)}/mo</div>
+      <div><strong>Lease:</strong> {tenant.lease_start||"—"} to {tenant.lease_end||"—"}</div><div><strong>Method:</strong> {tenant.payment_method}</div>
+    </div>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:16}}>
+      <thead><tr style={{background:"#18181B",color:"white"}}><th style={{padding:"8px",textAlign:"left"}}>Month</th><th style={{padding:"8px",textAlign:"left"}}>Amount</th><th style={{padding:"8px",textAlign:"left"}}>Status</th><th style={{padding:"8px",textAlign:"left"}}>Days Late</th><th style={{padding:"8px",textAlign:"left"}}>Late Fee</th><th style={{padding:"8px",textAlign:"left"}}>Verified</th></tr></thead>
+      <tbody>{tp.map(p=>{const dl=p.status==="verified"?(p.is_late?p.days_late||0:0):calcDaysLate(p.due_date);const lf=calcLateFee(dl,tenant.grace_days,tenant.late_fee);return <tr key={p.id} style={{borderBottom:"1px solid #E5E7EB"}}><td style={{padding:"6px 8px"}}>{monthLabel(p.month)}</td><td style={{padding:"6px 8px"}}>{fmtMoney(p.amount)}</td><td style={{padding:"6px 8px",color:STATUS_COLORS[p.status],fontWeight:700}}>{STATUS_LABELS[p.status]||p.status}</td><td style={{padding:"6px 8px"}}>{dl}</td><td style={{padding:"6px 8px"}}>{lf>0?fmtMoney(lf):"—"}</td><td style={{padding:"6px 8px"}}>{p.approved_at?new Date(p.approved_at).toLocaleDateString():"—"}</td></tr>;})}
+      </tbody>
+    </table>
+    {tp.length===0&&<p style={{color:"#94A3B8",textAlign:"center",padding:16}}>No payment records found.</p>}
+    <div style={{borderTop:"2px solid #18181B",paddingTop:12,fontSize:11,color:"#64748B"}}><p>Generated by RentProof ({settings.business_name||""}). Records based on landlord-verified proof of payment.</p><p style={{marginTop:8}}>Landlord: {settings.landlord_name||"—"} · {settings.landlord_phone||""} · {settings.landlord_email||""}</p></div>
+    <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}} className="no-print">
+      <Btn onClick={()=>window.print()}>🖨️ Print / Save PDF</Btn>
+      <Btn variant="outline" onClick={()=>{downloadCSV(`rentproof_${tenant.name.replace(/\s/g,"_")}_history.csv`,["Month","Amount","Status","Days Late","Late Fee","Verified"],tp.map(p=>[p.month,(p.amount/100).toFixed(2),p.status,p.days_late||0,(p.late_fee_applied||0)/100,p.approved_at||""]));showToast("CSV exported!");}}>📥 Export CSV</Btn>
+      {!demandUrl
+        ? <Btn variant="danger" onClick={genDemand} disabled={generating}>{generating?"Generating PDF...":"📋 Generate Demand Letter"}</Btn>
+        : <a href={demandUrl} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}><Btn>📋 Download Demand Letter</Btn></a>}
+    </div>
+  </div>;
+}
+
 /* ═══ RENT ROLL (monthly view + CSV export + court docs) ═══ */
 function RentRollTab({data,refresh,showToast,setModal}) {
   const {tenants,payments,settings}=data;const [month,setMonth]=useState(monthNow());
@@ -279,22 +420,7 @@ function RentRollTab({data,refresh,showToast,setModal}) {
 
   const exportCSV=()=>{downloadCSV(`rentproof_rent_roll_${month}.csv`,["Tenant","Property","Unit","Rent Due","Status","Days Late","Late Fee","Amount Paid","Method","Date Verified"],rows.map(r=>[r.tenant.name,r.propName,r.tenant.unit||"",(r.tenant.rent_amount/100).toFixed(2),r.status==="verified"?"Verified":r.status==="proof_uploaded"?"Proof Uploaded":r.status==="pending"?"Pending":"Not Paid",r.dl,(r.lf/100).toFixed(2),r.pay?(r.pay.amount/100).toFixed(2):"0.00",r.tenant.payment_method,r.pay?.approved_at?new Date(r.pay.approved_at).toLocaleDateString():""]));showToast("CSV downloaded!");};
 
-  const courtDoc=(tenant)=>{const tp=payments.filter(p=>p.tenant_id===tenant.id).sort((a,b)=>a.month.localeCompare(b.month));setModal(<div>
-    <div style={{textAlign:"center",marginBottom:20}}><div style={{fontSize:20,fontWeight:800}}>PAYMENT HISTORY — COURT RECORD</div><div style={{fontSize:12,color:"#64748B",marginTop:4}}>{settings.business_name||"RentProof"} · Generated {new Date().toLocaleDateString()}</div></div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16,fontSize:13}}>
-      <div><strong>Tenant:</strong> {tenant.name}</div><div><strong>Phone:</strong> {fmtPhone(tenant.phone)}</div>
-      <div><strong>Property:</strong> {tenant.properties?.name||"—"}</div><div><strong>Unit:</strong> {tenant.unit||"—"}</div>
-      <div><strong>Address:</strong> {tenant.properties?.address||"—"}</div><div><strong>Rent:</strong> {fmtMoney(tenant.rent_amount)}/mo</div>
-      <div><strong>Lease:</strong> {tenant.lease_start||"—"} to {tenant.lease_end||"—"}</div><div><strong>Method:</strong> {tenant.payment_method}</div>
-    </div>
-    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:16}}>
-      <thead><tr style={{background:"#18181B",color:"white"}}><th style={{padding:"8px",textAlign:"left"}}>Month</th><th style={{padding:"8px",textAlign:"left"}}>Amount</th><th style={{padding:"8px",textAlign:"left"}}>Status</th><th style={{padding:"8px",textAlign:"left"}}>Days Late</th><th style={{padding:"8px",textAlign:"left"}}>Late Fee</th><th style={{padding:"8px",textAlign:"left"}}>Verified</th></tr></thead>
-      <tbody>{tp.map(p=>{const dl=p.status==="verified"?(p.is_late?p.days_late||0:0):calcDaysLate(p.due_date);const lf=calcLateFee(dl,tenant.grace_days,tenant.late_fee);return <tr key={p.id} style={{borderBottom:"1px solid #E5E7EB"}}><td style={{padding:"6px 8px"}}>{monthLabel(p.month)}</td><td style={{padding:"6px 8px"}}>{fmtMoney(p.amount)}</td><td style={{padding:"6px 8px",color:STATUS_COLORS[p.status],fontWeight:700}}>{STATUS_LABELS[p.status]||p.status}</td><td style={{padding:"6px 8px"}}>{dl}</td><td style={{padding:"6px 8px"}}>{lf>0?fmtMoney(lf):"—"}</td><td style={{padding:"6px 8px"}}>{p.approved_at?new Date(p.approved_at).toLocaleDateString():"—"}</td></tr>;})}</tbody>
-    </table>
-    {tp.length===0&&<p style={{color:"#94A3B8",textAlign:"center",padding:16}}>No payment records found.</p>}
-    <div style={{borderTop:"2px solid #18181B",paddingTop:12,fontSize:11,color:"#64748B"}}><p>Generated by RentProof ({settings.business_name||""}). Records based on landlord-verified proof of payment.</p><p style={{marginTop:8}}>Landlord: {settings.landlord_name||"—"} · {settings.landlord_phone||""} · {settings.landlord_email||""}</p></div>
-    <div style={{display:"flex",gap:8,marginTop:16}} className="no-print"><Btn onClick={()=>window.print()}>🖨️ Print / Save PDF</Btn><Btn variant="outline" onClick={()=>{downloadCSV(`rentproof_${tenant.name.replace(/\s/g,"_")}_history.csv`,["Month","Amount","Status","Days Late","Late Fee","Verified"],tp.map(p=>[p.month,(p.amount/100).toFixed(2),p.status,p.days_late||0,(p.late_fee_applied||0)/100,p.approved_at||""]));showToast("CSV exported!");}}>📥 Export CSV</Btn></div>
-  </div>);};
+  const courtDoc=(tenant)=>setModal(<CourtDocModal tenant={tenant} payments={payments} settings={settings} showToast={showToast}/>);
 
   return <div className="fade">
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
