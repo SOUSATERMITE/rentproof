@@ -8,9 +8,13 @@ export default async function handler(req, res) {
   const { to, message } = req.body;
   if (!to || !message) return res.status(400).json({ error: "Missing to or message" });
 
-  const ACCOUNT_SID = "AC932fcb18a26c09c496b38e977971947e";
-  const AUTH_TOKEN = "ad97e1682b0b40d689b0c54b172ce933";
-  const FROM_NUMBER = "+18884116139";
+  const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+  const AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+  const FROM_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+
+  if (!ACCOUNT_SID || !AUTH_TOKEN || !FROM_NUMBER) {
+    return res.status(500).json({ error: "Twilio credentials not configured" });
+  }
 
   try {
     const auth = btoa(ACCOUNT_SID + ":" + AUTH_TOKEN);

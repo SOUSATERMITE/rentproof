@@ -20,8 +20,7 @@ The core workflow: landlord sends tenant a text reminder → tenant clicks link 
 | Database | Supabase | Project URL: `https://uooddulmilbzjngrikvf.supabase.co` |
 | Database Key | Supabase anon key | `sb_publishable_5WF16MLC83FxqgnOJKzlPA_Fc0Jf_sC` |
 | File Storage | Supabase Storage | Bucket: `rentproof-files` (public). Folders: `/proofs`, `/receipts`, `/vault` |
-| SMS | Twilio | SID: `AC932fcb18a26c09c496b38e977971947e` |
-| SMS Auth | Twilio | Token: `ad97e1682b0b40d689b0c54b172ce933` |
+| SMS | Twilio | Credentials in Vercel env vars: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` |
 | SMS Number | Twilio toll-free | `+18884116139` — **PENDING carrier verification** (Error 30032). SMS sends via API but carriers block delivery until Twilio approves toll-free verification. |
 | Landing Page | Netlify | rentproof.homes points here. Separate from the app. |
 | Email Collection | Formspree | `https://formspree.io/f/mojkklny` (on landing page) |
