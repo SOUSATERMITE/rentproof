@@ -71,7 +71,7 @@ export default async function handler(req, res) {
       const link = `${baseUrl}/pay.html?id=${paymentId}`;
       const amount = "$" + (tenant.rent_amount / 100).toLocaleString();
       const firstName = tenant.name.split(" ")[0];
-      const message = `Hi ${firstName}, your rent of ${amount}${tenant.unit ? ` for Unit ${tenant.unit}` : ""} is due today. Pay via ${tenant.payment_method || "your usual method"} and upload proof here: ${link}`;
+      const message = `Hi ${firstName}, your rent of ${amount}${tenant.unit ? ` for Unit ${tenant.unit}` : ""} is due today. Pay via ${tenant.payment_method || "your usual method"} and upload proof here: ${link} Reply STOP to opt out.`;
 
       try {
         const smsRes = await fetch(`${baseUrl}/api/send-sms`, {
